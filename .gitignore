@@ -1,0 +1,67 @@
+# =========================
+# Build outputs
+# =========================
+bin/
+obj/
+[Bb]in/
+[Oo]bj/
+
+# =========================
+# Visual Studio
+# =========================
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Visual Studio Code
+.vscode/
+
+# Rider / JetBrains
+.idea/
+*.DotSettings.user
+
+# =========================
+# NuGet
+# =========================
+*.nupkg
+*.snupkg
+packages/
+**/packages/*
+
+# NuGet restore
+project.lock.json
+project.assets.json
+*.nuget.props
+*.nuget.targets
+
+# =========================
+# Logs
+# =========================
+*.log
+
+# =========================
+# Test results
+# =========================
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+
+# =========================
+# Publish / deploy
+# =========================
+publish/
+*.publishsettings
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# User secrets
+# =========================
+secrets.json
