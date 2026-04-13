@@ -4,5 +4,6 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
+  <Project Path="Mubarrat.OpenType/Mubarrat.OpenType.csproj" Id="c35b566f-4592-40c4-9420-768ec215455c" />
   <Project Path="Mubarrat.VideoEngine/Mubarrat.VideoEngine.csproj" />
 </Solution>

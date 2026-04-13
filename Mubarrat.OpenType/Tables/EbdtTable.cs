@@ -1,0 +1,14 @@
+namespace Mubarrat.OpenType.Tables;
+
+public sealed class EbdtTable : IOpenTypeTable
+{
+    public string Tag => "EBDT";
+    public uint Version { get; private set; }
+    public byte[] Payload { get; private set; } = [];
+
+    public void Parse(ParsedTables tables, OpenTypeReader.TableScope scope)
+    {
+        Version = scope.Reader.ReadVersion16Dot16();
+        tables.Add(this);
+    }
+}

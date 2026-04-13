@@ -12,6 +12,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\Mubarrat.OpenType\Mubarrat.OpenType.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
 	  <None Update="libs\ffmpeg\*.dll">
 		  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		  <TargetPath>%(Filename)%(Extension)</TargetPath>
