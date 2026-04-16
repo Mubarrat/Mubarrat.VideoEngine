@@ -51,7 +51,7 @@ public class Video
         // Over number means cpu has to decide which thread should it run and it can add overhead.
         // Under number means not efficiently using full cpu to render all frames.
         // For debugger, we should use only 1 thread because it becomes very hard to debug if there's multiple thread.
-        uint framesPerChunk = Debugger.IsAttached ? 1u : (uint)Environment.ProcessorCount;
+        uint framesPerChunk = Debugger.IsAttached ? 1u : (uint)Environment.ProcessorCount - 1; // Leave 1 core because it's main thread
 
         // Allocate a large buffer for a chunk of frames. Each frame is Width * Height * 4 bytes (BGRA).
         // Using a single large buffer for the chunk reduces overhead compared to allocating separate buffers for each frame.
@@ -81,11 +81,37 @@ public class Video
             // Producer task (render frames in parallel)
             Task.Run(() =>
             {
-                for (uint start = 0; start < TotalFrames; start += framesPerChunk)
+                //for (uint start = 0; start < TotalFrames; start += framesPerChunk)
+                //{
+                //    double chunkStartTime = swTotal.Elapsed.TotalSeconds;
+                //    uint total = Math.Min(framesPerChunk, TotalFrames - start);
+                //    Parallel.For(0, total, i =>
+                //    {
+                //        consumerEvents[i].Wait();
+
+                //        byte* framePtr = chunkBuffer + (ulong)i * frameSize;
+                //        NativeMemory.Clear(framePtr, frameSize); // Clear the frame buffer before rendering
+
+                //        try
+                //        {
+                //            FrameSource.RenderFrame(start + (uint)i, (Color32*)framePtr, Width, Height);
+                //        }
+                //        catch (Exception ex)
+                //        {
+                //            exceptions.Add(ex); // flow exception from producer to main thread
+                //            Log("Producer", ConsoleColor.Red, $"Failed to render frame {start + i + 1}/{TotalFrames}");
+                //        }
+
+                //        producerEvents[i].Set();
+                //        consumerEvents[i].Reset();
+                //    });
+                //    double chunkEndTime = swTotal.Elapsed.TotalSeconds;
+                //    Log("Producer", ConsoleColor.Cyan, $"Rendered {start + 1}-{start + total} out of {TotalFrames} frames in {chunkEndTime - chunkStartTime:F2}s. Speedup: {(total / (double)FramesPerSecond) / (chunkEndTime - chunkStartTime):F2}x");
+                //}
+
+                Parallel.For(0, framesPerChunk, i =>
                 {
-                    double chunkStartTime = swTotal.Elapsed.TotalSeconds;
-                    uint total = Math.Min(framesPerChunk, TotalFrames - start);
-                    Parallel.For(0, total, i =>
+                    for (uint j = (uint)i; j < TotalFrames; j += framesPerChunk)
                     {
                         consumerEvents[i].Wait();
 
@@ -94,20 +120,20 @@ public class Video
 
                         try
                         {
-                            FrameSource.RenderFrame(start + (uint)i, (Color32*)framePtr, Width, Height);
+                            FrameSource.RenderFrame(j, (Color32*)framePtr, Width, Height);
+                            if (i == framesPerChunk - 1)
+                                Log("Producer", ConsoleColor.Cyan, $"Rendered frame {j + 1}/{TotalFrames}");
                         }
                         catch (Exception ex)
                         {
                             exceptions.Add(ex); // flow exception from producer to main thread
-                            Log("Producer", ConsoleColor.Red, $"Failed to render frame {start + i + 1}/{TotalFrames}");
+                            Log("Producer", ConsoleColor.Red, $"Failed to render frame {j + 1}/{TotalFrames}");
                         }
 
                         producerEvents[i].Set();
                         consumerEvents[i].Reset();
-                    });
-                    double chunkEndTime = swTotal.Elapsed.TotalSeconds;
-                    Log("Producer", ConsoleColor.Cyan, $"Rendered {start + 1}-{start + total} out of {TotalFrames} frames in {chunkEndTime - chunkStartTime:F2}s. Speedup: {(total / (double)FramesPerSecond) / (chunkEndTime - chunkStartTime):F2}x");
-                }
+                    }
+                });
             });
 
             using (var encoder = EncoderConstructor(Width, Height, FramesPerSecond, outputPath)!)

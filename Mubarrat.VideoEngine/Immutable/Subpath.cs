@@ -29,7 +29,7 @@ public struct Subpath(params Edge[] edges) : ILerpable<Subpath>
             return new(Array.ConvertAll(Edges, e => e.Lerp(center, t)));
         }
 
-        int count = Math.Max(Edges.Length + 1, target.Edges.Length + 1);
+        int count = Math.Max(Edges.Length, target.Edges.Length);
 
         var a = SamplePoints(count);
         var b = target.SamplePoints(count);
@@ -49,9 +49,14 @@ public struct Subpath(params Edge[] edges) : ILerpable<Subpath>
         var result = new Point[count];
         for (int i = 0; i < count; i++)
             result[i] = a[i].Lerp(b[i], t);
-        var edges = new Edge[count - 1];
-        for (int i = 0; i < count - 1; i++)
-            edges[i] = new Edge(result[i], result[i + 1]);
+        var edges = new Edge[count];
+
+        for (int i = 0; i < count; i++)
+        {
+            var p0 = result[i];
+            var p1 = result[(i + 1) % count];
+            edges[i] = new Edge(p0, p1);
+        }
         return new Subpath(edges);
     }
 
@@ -62,24 +67,12 @@ public struct Subpath(params Edge[] edges) : ILerpable<Subpath>
         var result = new Point[count];
         for (int i = 0; i < count; i++)
         {
-            double d = i / (double)(count - 1) * table.CumLengths[^1];
+            double d = i / (double)(count) * table.CumLengths[^1];
             int idx = Math.Max(0, LowerBound(table.CumLengths, d) - 1);
             var e = Edges[idx];
             result[i] = e.Point1.Lerp(e.Point2, (d - table.CumLengths[idx]) / e.Length);
         }
         return result;
-    }
-
-    private readonly Point SamplePointAtDistance(double s)
-    {
-        if (Edges.Length == 0) return new();
-        double accumulated = 0;
-        foreach (Edge e in Edges)
-        {
-            if (s <= accumulated + e.Length) return e.Point1.Lerp(e.Point2, (s - accumulated) / e.Length);
-            accumulated += e.Length;
-        }
-        return Edges[^1].Point2;
     }
 
     private static bool IsClockwise(Point[] pts) => Enumerable.Range(0, pts.Length)
@@ -123,10 +116,12 @@ public struct Subpath(params Edge[] edges) : ILerpable<Subpath>
     public readonly Point CenterPoint
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        get => new(Edges.Average(x => x.MidPoint.X), Edges.Average(x => x.MidPoint.Y));
+        get => Edges.Length == 0 ? Point.NaN : new(Edges.Average(x => x.MidPoint.X), Edges.Average(x => x.MidPoint.Y));
     }
 
-    public readonly Rect Bounds => Edges.Select(x => new Rect(x.Point1, x.Point2)).Aggregate((a, b) => a.Union(b));
+    public readonly Rect Bounds => Edges.Length == 0 ? Rect.NaN : Edges.Select(x => new Rect(x.Point1, x.Point2)).Aggregate((a, b) => a.Union(b));
+
+    public readonly double Perimeter => Edges.Length == 0 ? 0 : Edges.Sum(e => e.Length);
 
     private readonly struct LengthTable
     {

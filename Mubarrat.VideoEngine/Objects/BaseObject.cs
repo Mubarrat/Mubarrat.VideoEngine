@@ -17,7 +17,7 @@ public class BaseObject : ICloneable
         }
     }
 
-    protected virtual object GetDefaultValue(Property property) => property.defaultValue!;
+    protected virtual object GetDefaultValue(Property property) => property.DefaultValue!;
 
     protected virtual void OnPropertyChanged(Property property, object? oldValue, object? newValue) {}
 

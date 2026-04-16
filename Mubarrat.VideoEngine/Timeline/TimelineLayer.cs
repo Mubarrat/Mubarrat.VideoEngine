@@ -7,7 +7,7 @@ public class TimelineLayer
 {
     public double StartTime => commands.Count == 0 ? 0 : commands.Min(x => x.StartTime);
 
-    private readonly SortedSet<TimelineCommand> commands = new(Comparer<TimelineCommand>.Create(static (a, b) => a.StartTime.CompareTo(b.StartTime) is int i and not 0 ? i : 1));
+    private readonly List<TimelineCommand> commands = [];
 
     public TimelineLayer To(double second, Drawing drawing)
     {

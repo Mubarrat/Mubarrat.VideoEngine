@@ -79,7 +79,29 @@ public class PathBuilder(IEnumerable<PathSegment> segs)
 
     public PathBuilder Close()
     {
-        Segments.Add(new LineSegment(Segments[0] is MoveSegment { Point: var point } ? point : new()));
+        if (Segments.Count == 0)
+            return this;
+
+        Point target = default;
+        bool hasTarget = false;
+
+        for (int i = Segments.Count - 1; i >= 0; i--)
+        {
+            if (Segments[i] is MoveSegment { Point: var point })
+            {
+                target = point;
+                hasTarget = true;
+                break;
+            }
+        }
+
+        if (!hasTarget)
+            return this;
+
+        Point current = Segments[^1].Points[^1];
+        if (current != target)
+            Segments.Add(new LineSegment(target));
+
         return this;
     }
 

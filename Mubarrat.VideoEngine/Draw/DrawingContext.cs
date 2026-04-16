@@ -1,10 +1,13 @@
-﻿using Mubarrat.VideoEngine.Immutable;
+using Mubarrat.VideoEngine.Immutable;
 using System.Runtime.InteropServices;
 
 namespace Mubarrat.VideoEngine.Draw;
 
 public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ushort height)
 {
+    private const double FillSubsampleWeight = 0.5;
+    private const double StrokeSampleWeight = 0.25;
+
     private readonly Stack<(Matrix2D Transform, double Opacity)> stateStack = new();
 
     private (Matrix2D Transform, double Opacity) CurrentState =>
@@ -95,6 +98,7 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
         int* next = (int*)NativeMemory.Alloc((nuint)maxEdges, (nuint)sizeof(int));
         int* bucketHeads = (int*)NativeMemory.Alloc((nuint)h, (nuint)sizeof(int));
         int* active = (int*)NativeMemory.Alloc((nuint)maxEdges, (nuint)sizeof(int));
+        int* sorted = (int*)NativeMemory.Alloc((nuint)maxEdges, (nuint)sizeof(int));
 
         try
         {
@@ -181,53 +185,12 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
                     continue;
                 }
 
-                // Incremental sort (nearly sorted)
-                for (int i = 1; i < activeCount; i++)
-                {
-                    if (edges[active[i - 1]].X > edges[active[i]].X)
-                    {
-                        (active[i - 1], active[i]) = (active[i], active[i - 1]);
-                        int j = i - 1;
-                        while (j > 0 && edges[active[j - 1]].X > edges[active[j]].X)
-                        {
-                            (active[j - 1], active[j]) = (active[j], active[j - 1]);
-                            j--;
-                        }
-                    }
-                }
-
                 Color32* row = firstPixel + y * w;
 
-                int winding = 0;
-
-                for (int i = 0; i + 1 < activeCount; i++)
-                {
-                    winding += edges[active[i]].Winding;
-                    if (path.IsNonZeroFill && winding == 0)
-                        continue;
-
-                    float xStart = edges[active[i]].X;
-                    float xEnd = edges[active[i + 1]].X;
-
-                    if (xEnd <= xStart)
-                        continue;
-
-                    int x0 = (int)(xStart + 0.5f);
-                    int x1 = (int)(xEnd - 0.5f);
-
-                    if (x0 < 0) x0 = 0;
-                    if (x1 >= w) x1 = w - 1;
-                    if (x0 > x1) continue;
-
-                    Color32* p = row + x0;
-                    double sx = (x0 + 0.5 - shapeLeft) * invShapeW;
-                    if (fullOpacity)
-                        for (int x = x0; x <= x1; x++, p++, sx += invShapeW)
-                            Color32.BlendPremultiplied(fill.Sample(Math.Clamp(sx, 0.0, 1.0), Math.Clamp(sy, 0.0, 1.0)).ToPremultiplied, ref *p);
-                    else
-                        for (int x = x0; x <= x1; x++, p++, sx += invShapeW)
-                            Color32.BlendPremultiplied(fill.Sample(Math.Clamp(sx, 0.0, 1.0), Math.Clamp(sy, 0.0, 1.0)).ToPremultiplied * opacity, ref *p);
-                }
+                DrawFillSample(path.IsNonZeroFill, fill, edges, active, sorted, activeCount, row, y, shapeLeft, shapeTop,
+                    invShapeW, invShapeH, opacity, w, -0.25f, FillSubsampleWeight);
+                DrawFillSample(path.IsNonZeroFill, fill, edges, active, sorted, activeCount, row, y, shapeLeft, shapeTop,
+                    invShapeW, invShapeH, opacity, w, 0.25f, FillSubsampleWeight);
 
                 // Advance edges
                 for (int i = 0; i < activeCount; i++)
@@ -240,6 +203,76 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
             NativeMemory.Free(next);
             NativeMemory.Free(bucketHeads);
             NativeMemory.Free(active);
+            NativeMemory.Free(sorted);
+        }
+    }
+
+    private static void SortActiveEdges(RasterEdge* edges, int* active, int* sorted, int count, float sampleDelta)
+    {
+        for (int i = 0; i < count; i++)
+            sorted[i] = active[i];
+
+        for (int i = 1; i < count; i++)
+        {
+            int key = sorted[i];
+            float keyX = edges[key].X + edges[key].Dx * sampleDelta;
+
+            int j = i - 1;
+            while (j >= 0 && edges[sorted[j]].X + edges[sorted[j]].Dx * sampleDelta > keyX)
+            {
+                sorted[j + 1] = sorted[j];
+                j--;
+            }
+
+            sorted[j + 1] = key;
+        }
+    }
+
+    private void DrawFillSample(bool isNonZeroFill, IBrush fill, RasterEdge* edges, int* active, int* sorted, int activeCount,
+        Color32* row, int y, double shapeLeft, double shapeTop, double invShapeW, double invShapeH,
+        float opacity, int w, float sampleDelta, double sampleWeight)
+    {
+        SortActiveEdges(edges, active, sorted, activeCount, sampleDelta);
+
+        double sampleY = y + 0.5 + sampleDelta;
+        double sy = (sampleY - shapeTop) * invShapeH;
+        double syClamped = Math.Clamp(sy, 0.0, 1.0);
+
+        int winding = 0;
+        for (int i = 0; i + 1 < activeCount; i++)
+        {
+            int current = sorted[i];
+            int next = sorted[i + 1];
+
+            winding += edges[current].Winding;
+            if (isNonZeroFill && winding == 0)
+                continue;
+
+            double xStart = edges[current].X + edges[current].Dx * sampleDelta;
+            double xEnd = edges[next].X + edges[next].Dx * sampleDelta;
+
+            if (xEnd <= xStart)
+                continue;
+
+            int x0 = Math.Max(0, (int)Math.Floor(xStart));
+            int x1 = Math.Min(w - 1, (int)Math.Ceiling(xEnd) - 1);
+            if (x0 > x1)
+                continue;
+
+            for (int x = x0; x <= x1; x++)
+            {
+                double coverage = Math.Min(xEnd, x + 1.0) - Math.Max(xStart, x);
+                if (coverage <= 0)
+                    continue;
+
+                double sx = (x + 0.5 - shapeLeft) * invShapeW;
+                double sxClamped = Math.Clamp(sx, 0.0, 1.0);
+                double alpha = opacity * sampleWeight * coverage;
+                if (alpha <= 0)
+                    continue;
+
+                Color32.BlendPremultiplied(fill.Sample(sxClamped, syClamped).ToPremultiplied * alpha, ref row[x]);
+            }
         }
     }
 
@@ -339,16 +372,37 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
         {
             Color32* row = firstPixel + py * w;
             double cy = py + 0.5;
-            double dy = cy - y;
-            double dy2 = dy * dy;
             for (int px = minX; px <= maxX; px++)
             {
-                double dx = px + 0.5 - x;
-                if (dx * dx + dy2 <= r2)
+                int covered = 0;
+
+                double sx0 = px + 0.25;
+                double sx1 = px + 0.75;
+                double sy0 = py + 0.25;
+                double sy1 = py + 0.75;
+
+                double dx = sx0 - x;
+                double dy = sy0 - y;
+                if (dx * dx + dy * dy <= r2) covered++;
+
+                dx = sx1 - x;
+                dy = sy0 - y;
+                if (dx * dx + dy * dy <= r2) covered++;
+
+                dx = sx0 - x;
+                dy = sy1 - y;
+                if (dx * dx + dy * dy <= r2) covered++;
+
+                dx = sx1 - x;
+                dy = sy1 - y;
+                if (dx * dx + dy * dy <= r2) covered++;
+
+                if (covered > 0)
                 {
                     double sx = (px + 0.5 - shapeLeft) * invShapeW;
                     double sy = (cy - shapeTop) * invShapeH;
-                    Color32.BlendPremultiplied(stroke.Sample(Math.Clamp(sx, 0.0, 1.0), Math.Clamp(sy, 0.0, 1.0)).ToPremultiplied * opacity, ref row[px]);
+                    double coverage = covered * StrokeSampleWeight;
+                    Color32.BlendPremultiplied(stroke.Sample(Math.Clamp(sx, 0.0, 1.0), Math.Clamp(sy, 0.0, 1.0)).ToPremultiplied * (opacity * coverage), ref row[px]);
                 }
             }
         }
@@ -376,32 +430,43 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
         {
             Color32* row = firstPixel + py * w;
             double cy = py + 0.5;
-            double ry = cy - y1;
-            double ry2 = ry * ry;
 
             for (int px = minX; px <= maxX; px++)
             {
-                double rx = px + 0.5 - x1;
-                double along = rx * ux + ry * uy;
-                double across = rx * vx + ry * vy;
+                int covered = 0;
 
-                bool hit = cap switch
-                {
-                    LineCap.Flat => along >= 0 && along <= len && Math.Abs(across) <= radius,
-                    LineCap.Square => along >= -radius && along <= len + radius && Math.Abs(across) <= radius,
-                    LineCap.Round => (along >= 0 && along <= len && Math.Abs(across) <= radius)
-                                     || (along < 0 && rx * rx + ry2 <= r2)
-                                     || (along > len && (px + 0.5 - x2) * (px + 0.5 - x2) + (cy - y2) * (cy - y2) <= r2),
-                    _ => along >= 0 && along <= len && Math.Abs(across) <= radius
-                };
+                covered += IsStrokeSampleHit(px + 0.25, py + 0.25, x1, y1, x2, y2, ux, uy, vx, vy, len, radius, r2, cap) ? 1 : 0;
+                covered += IsStrokeSampleHit(px + 0.75, py + 0.25, x1, y1, x2, y2, ux, uy, vx, vy, len, radius, r2, cap) ? 1 : 0;
+                covered += IsStrokeSampleHit(px + 0.25, py + 0.75, x1, y1, x2, y2, ux, uy, vx, vy, len, radius, r2, cap) ? 1 : 0;
+                covered += IsStrokeSampleHit(px + 0.75, py + 0.75, x1, y1, x2, y2, ux, uy, vx, vy, len, radius, r2, cap) ? 1 : 0;
 
-                if (hit)
+                if (covered > 0)
                 {
                     double sx = (px + 0.5 - shapeLeft) * invShapeW;
                     double sy = (cy - shapeTop) * invShapeH;
-                    Color32.BlendPremultiplied(stroke.Sample(Math.Clamp(sx, 0.0, 1.0), Math.Clamp(sy, 0.0, 1.0)).ToPremultiplied * opacity, ref row[px]);
+                    double coverage = covered * StrokeSampleWeight;
+                    Color32.BlendPremultiplied(stroke.Sample(Math.Clamp(sx, 0.0, 1.0), Math.Clamp(sy, 0.0, 1.0)).ToPremultiplied * (opacity * coverage), ref row[px]);
                 }
             }
         }
+    }
+
+    private static bool IsStrokeSampleHit(double sampleX, double sampleY, double x1, double y1, double x2, double y2,
+        double ux, double uy, double vx, double vy, double len, double radius, double r2, LineCap cap)
+    {
+        double rx = sampleX - x1;
+        double ry = sampleY - y1;
+        double along = rx * ux + ry * uy;
+        double across = rx * vx + ry * vy;
+
+        return cap switch
+        {
+            LineCap.Flat => along >= 0 && along <= len && Math.Abs(across) <= radius,
+            LineCap.Square => along >= -radius && along <= len + radius && Math.Abs(across) <= radius,
+            LineCap.Round => (along >= 0 && along <= len && Math.Abs(across) <= radius)
+                             || (along < 0 && rx * rx + ry * ry <= r2)
+                             || (along > len && (sampleX - x2) * (sampleX - x2) + (sampleY - y2) * (sampleY - y2) <= r2),
+            _ => along >= 0 && along <= len && Math.Abs(across) <= radius
+        };
     }
 }

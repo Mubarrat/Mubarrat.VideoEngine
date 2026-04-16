@@ -5,7 +5,7 @@ namespace Mubarrat.VideoEngine.Draw;
 public sealed class GroupDrawing : Drawing
 {
     public List<Drawing> Drawings { get => (List<Drawing>)this[DrawingsProperty]; set => this[DrawingsProperty] = value; }
-    public static readonly Property DrawingsProperty = new(nameof(Drawings), typeof(List<Drawing>), defaultValue: null);
+    public static readonly Property DrawingsProperty = new(nameof(Drawings), typeof(List<Drawing>), DefaultValue: null);
 
     public override Rect Bounds => Drawings.Aggregate(Rect.Empty, (a, b) => a.Union(b.Bounds)) * Transform;
 

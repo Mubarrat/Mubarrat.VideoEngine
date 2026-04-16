@@ -1,6 +1,8 @@
 ﻿using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 
 namespace Mubarrat.VideoEngine;
 
@@ -85,60 +87,54 @@ public struct Point(double x, double y) : IEquatable<Point>, ILerpable<Point>
 
 public static class PointExtensions
 {
-    extension(Point[] @this)
+    extension(ref Span<Point> points)
     {
-        public static Point[] operator *(Point[] points, Matrix2D m)
+        public static unsafe Point[] operator *(Span<Point> _points, Matrix2D m)
         {
-            int n = points.Length;
-            var result = new Point[n];
-            int i = 0;
-            if (Vector.IsHardwareAccelerated)
-            {
-                Vector<double> m11 = new(m.ScaleX), m12 = new(m.SkewX), m21 = new(m.SkewY), m22 = new(m.ScaleY), m13 = new(m.OffsetX), m23 = new(m.OffsetY);
-                int simdCount = Vector<double>.Count;
-                Span<double> xs = stackalloc double[simdCount], ys = stackalloc double[simdCount];
-                for (; i + simdCount <= n; i += simdCount)
+            var result = new Point[_points.Length];
+            int length = _points.Length * 2, i = 0;
+            if (Avx.IsSupported)
+                fixed (double* d0 = &_points[0].X, r0 = &result[0].X)
                 {
-                    for (int j = 0; j < simdCount; j++)
+                    Vector256<double>
+                        m11 = Vector256.Create(m.ScaleX), m12 = Vector256.Create(m.SkewX), m21 = Vector256.Create(m.SkewY),
+                        m22 = Vector256.Create(m.ScaleY), m13 = Vector256.Create(m.OffsetX), m23 = Vector256.Create(m.OffsetY);
+                    for (; i <= length - 4; i += 4)
                     {
-                        xs[j] = points[i + j].X;
-                        ys[j] = points[i + j].Y;
+                        Vector256<double> v = Avx.LoadVector256(d0 + i), vx = Avx.Permute(v, 0b11011000), vy = Avx.Permute(v, 0b11111101);
+                        Avx.Store(r0 + i, Avx.UnpackLow(
+                            Vector256.FusedMultiplyAdd(vx, m11, Vector256.FusedMultiplyAdd(vy, m21, m13)),
+                            Vector256.FusedMultiplyAdd(vx, m12, Vector256.FusedMultiplyAdd(vy, m22, m23))));
                     }
-                    Vector<double> vx = new(xs), vy = new(ys), rx = vx * m11 + vy * m21 + m13, ry = vx * m12 + vy * m22 + m23;
-                    for (int j = 0; j < simdCount; j++)
-                        result[i + j] = new Point(rx[j], ry[j]);
                 }
-            }
-            for (; i < n; i++)
-                result[i] = points[i] * m;
+            for (int p = i >> 1; p < _points.Length; p++)
+                result[p] = _points[p] * m;
             return result;
         }
 
-        public static Point[] operator /(Point[] points, Matrix2D m) => points * m.Inverse;
+        public static Point[] operator /(Span<Point> _points, Matrix2D m) => _points * m.Inverse;
 
-        public void operator *=(Matrix2D m)
+        public unsafe void operator *=(Matrix2D m)
         {
-            int n = @this.Length;
-            int i = 0;
-            if (Vector.IsHardwareAccelerated)
-            {
-                Vector<double> m11 = new(m.ScaleX), m12 = new(m.SkewX), m21 = new(m.SkewY), m22 = new(m.ScaleY), m13 = new(m.OffsetX), m23 = new(m.OffsetY);
-                int simdCount = Vector<double>.Count;
-                Span<double> xs = stackalloc double[simdCount], ys = stackalloc double[simdCount];
-                for (; i + simdCount <= n; i += simdCount)
+            int length = points.Length * 2, i = 0;
+            if (Avx.IsSupported)
+                fixed (double* d0 = &points[0].X)
                 {
-                    for (int j = 0; j < simdCount; j++)
+                    Vector256<double>
+                        m11 = Vector256.Create(m.ScaleX), m12 = Vector256.Create(m.SkewX), m21 = Vector256.Create(m.SkewY),
+                        m22 = Vector256.Create(m.ScaleY), m13 = Vector256.Create(m.OffsetX), m23 = Vector256.Create(m.OffsetY);
+                    for (; i <= length - 4; i += 4)
                     {
-                        xs[j] = @this[i + j].X;
-                        ys[j] = @this[i + j].Y;
+                        Vector256<double> v = Avx.LoadVector256(d0 + i), vx = Avx.Permute(v, 0b11011000), vy = Avx.Permute(v, 0b11111101);
+                        Avx.Store(d0 + i, Avx.UnpackLow(
+                            Vector256.FusedMultiplyAdd(vx, m11, Vector256.FusedMultiplyAdd(vy, m21, m13)),
+                            Vector256.FusedMultiplyAdd(vx, m12, Vector256.FusedMultiplyAdd(vy, m22, m23))));
                     }
-                    Vector<double> vx = new(xs), vy = new(ys), rx = vx * m11 + vy * m21 + m13, ry = vx * m12 + vy * m22 + m23;
-                    for (int j = 0; j < simdCount; j++)
-                        @this[i + j] = new Point(rx[j], ry[j]);
                 }
-            }
-            for (; i < n; i++)
-                @this[i] *= m;
+            for (int p = i >> 1; p < points.Length; p++)
+                points[p] *= m;
         }
+
+        public void operator /=(Matrix2D m) => points *= m.Inverse;
     }
 }

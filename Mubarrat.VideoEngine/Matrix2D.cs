@@ -81,15 +81,16 @@ public struct Matrix2D : IEquatable<Matrix2D>, ILerpable<Matrix2D>
 
     public void operator *=(Matrix2D other)
     {
-        // Only cache the original ScaleX and SkewY; other values can be overwritten safely
-        double oldScaleX = ScaleX, oldSkewY = SkewY;
-        // Multiply (this = this * other)
-        ScaleX = oldScaleX * other.ScaleX + SkewX * other.SkewY; // uses oldScaleX, SkewX
-        SkewX = oldScaleX * other.SkewX + SkewX * other.ScaleY;  // uses oldScaleX, SkewX
-        SkewY = oldSkewY * other.ScaleX + ScaleY * other.SkewY;  // uses oldSkewY, ScaleY
-        ScaleY = oldSkewY * other.SkewX + ScaleY * other.ScaleY; // uses oldSkewY, ScaleY
-        OffsetX = OffsetX * other.ScaleX + OffsetY * other.SkewY + other.OffsetX;
-        OffsetY = OffsetX * other.SkewX + OffsetY * other.ScaleY + other.OffsetY;
+        double sx = ScaleX, sy = ScaleY, kx = SkewX, ky = SkewY, ox = OffsetX, oy = OffsetY;
+
+        ScaleX = sx * other.ScaleX + kx * other.SkewY;
+        SkewX = sx * other.SkewX + kx * other.ScaleY;
+
+        SkewY = ky * other.ScaleX + sy * other.SkewY;
+        ScaleY = ky * other.SkewX + sy * other.ScaleY;
+
+        OffsetX = ox * other.ScaleX + oy * other.SkewY + other.OffsetX;
+        OffsetY = ox * other.SkewX + oy * other.ScaleY + other.OffsetY;
     }
 
     public static Matrix2D operator *(Matrix2D a, double b) => new(

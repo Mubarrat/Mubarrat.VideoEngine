@@ -183,16 +183,16 @@ public sealed class MathTable : IOpenTypeTable
     }
 
     public readonly record struct MathGlyphInfoData(
-        MathItalicsCorrectionInfo ItalicsCorrectionInfo,
-        MathTopAccentAttachmentInfo TopAccentAttachment,
+        MathItalicsCorrectionInfo? ItalicsCorrectionInfo,
+        MathTopAccentAttachmentInfo? TopAccentAttachment,
         Coverage? ExtendedShapeCoverage,
-        MathKernInfoData MathKernInfo) : IOpenTypeCommonTable<MathGlyphInfoData>
+        MathKernInfoData? MathKernInfo) : IOpenTypeCommonTable<MathGlyphInfoData>
     {
         public static MathGlyphInfoData Parse(OpenTypeReader.TableScope scope, object? param = null) => new(
-        ItalicsCorrectionInfo: scope.ParseCommonTable<MathItalicsCorrectionInfo>(scope.Reader.ReadOffset16()),
-        TopAccentAttachment: scope.ParseCommonTable<MathTopAccentAttachmentInfo>(scope.Reader.ReadOffset16()),
-        ExtendedShapeCoverage: scope.ParseCommonTableOrDefault<Coverage>(scope.Reader.ReadOffset16()),
-        MathKernInfo: scope.ParseCommonTable<MathKernInfoData>(scope.Reader.ReadOffset16()));
+            ItalicsCorrectionInfo: scope.ParseCommonTableOrDefault<MathItalicsCorrectionInfo>(scope.Reader.ReadOffset16()),
+            TopAccentAttachment: scope.ParseCommonTableOrDefault<MathTopAccentAttachmentInfo>(scope.Reader.ReadOffset16()),
+            ExtendedShapeCoverage: scope.ParseCommonTableOrDefault<Coverage>(scope.Reader.ReadOffset16()),
+            MathKernInfo: scope.ParseCommonTableOrDefault<MathKernInfoData>(scope.Reader.ReadOffset16()));
     }
 
     public readonly record struct MathGlyphVariantRecord(ushort VariantGlyph, ushort AdvanceMeasurement) : IOpenTypeCommonTable<MathGlyphVariantRecord>

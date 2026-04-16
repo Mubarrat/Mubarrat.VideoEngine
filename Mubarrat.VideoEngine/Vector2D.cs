@@ -1,5 +1,7 @@
 ﻿using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 
 namespace Mubarrat.VideoEngine;
 
@@ -89,4 +91,58 @@ public struct Vector2D : IEquatable<Vector2D>, ILerpable<Vector2D>
     public override readonly int GetHashCode() => HashCode.Combine(X, Y);
 
     public override readonly string ToString() => $"<{X}, {Y}>";
+}
+
+public static class Vector2DExtensions
+{
+    extension(ref Span<Vector2D> vectors)
+    {
+        public static unsafe Vector2D[] operator *(Span<Vector2D> _vectors, Matrix2D m)
+        {
+            var result = new Vector2D[_vectors.Length];
+            int length = _vectors.Length * 2, i = 0;
+            if (Avx.IsSupported)
+                fixed (double* d0 = &_vectors[0].X, r0 = &result[0].X)
+                {
+                    Vector256<double>
+                        m11 = Vector256.Create(m.ScaleX), m12 = Vector256.Create(m.SkewX), m21 = Vector256.Create(m.SkewY),
+                        m22 = Vector256.Create(m.ScaleY), m13 = Vector256.Create(m.OffsetX), m23 = Vector256.Create(m.OffsetY);
+                    for (; i <= length - 4; i += 4)
+                    {
+                        Vector256<double> v = Avx.LoadVector256(d0 + i), vx = Avx.Permute(v, 0b11011000), vy = Avx.Permute(v, 0b11111101);
+                        Avx.Store(r0 + i, Avx.UnpackLow(
+                            Vector256.FusedMultiplyAdd(vx, m11, Vector256.FusedMultiplyAdd(vy, m21, m13)),
+                            Vector256.FusedMultiplyAdd(vx, m12, Vector256.FusedMultiplyAdd(vy, m22, m23))));
+                    }
+                }
+            for (int p = i >> 1; p < _vectors.Length; p++)
+                result[p] = _vectors[p] * m;
+            return result;
+        }
+
+        public static Vector2D[] operator /(Span<Vector2D> _vectors, Matrix2D m) => _vectors * m.Inverse;
+
+        public unsafe void operator *=(Matrix2D m)
+        {
+            int length = vectors.Length * 2, i = 0;
+            if (Avx.IsSupported)
+                fixed (double* d0 = &vectors[0].X)
+                {
+                    Vector256<double>
+                        m11 = Vector256.Create(m.ScaleX), m12 = Vector256.Create(m.SkewX), m21 = Vector256.Create(m.SkewY),
+                        m22 = Vector256.Create(m.ScaleY), m13 = Vector256.Create(m.OffsetX), m23 = Vector256.Create(m.OffsetY);
+                    for (; i <= length - 4; i += 4)
+                    {
+                        Vector256<double> v = Avx.LoadVector256(d0 + i), vx = Avx.Permute(v, 0b11011000), vy = Avx.Permute(v, 0b11111101);
+                        Avx.Store(d0 + i, Avx.UnpackLow(
+                            Vector256.FusedMultiplyAdd(vx, m11, Vector256.FusedMultiplyAdd(vy, m21, m13)),
+                            Vector256.FusedMultiplyAdd(vx, m12, Vector256.FusedMultiplyAdd(vy, m22, m23))));
+                    }
+                }
+            for (int p = i >> 1; p < vectors.Length; p++)
+                vectors[p] *= m;
+        }
+
+        public void operator /=(Matrix2D m) => vectors *= m.Inverse;
+    }
 }

@@ -3,10 +3,12 @@
 public record class Property(
     string Name,
     Type PropertyType,
-    object? defaultValue = null,
+    object? DefaultValue = null,
     bool IsInherited = false,
-    bool AffectsLayout = false,
-    bool IsAnimatable = true)
+    bool AffectsMeasure = false,
+    bool AffectsArrange = false,
+    bool AffectsParentMeasure = false,
+    bool AffectsParentArrange = false)
 {
     public override string ToString() => $"{Name} ({PropertyType.Name})";
 }

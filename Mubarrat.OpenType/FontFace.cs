@@ -21,12 +21,20 @@ public sealed class FontFace
         ushort entrySelector = reader.ReadUInt16();
         ushort rangeShift = reader.ReadUInt16();
 
+        var tableRecords = new (string Tag, uint Checksum, uint Offset, uint Length)[numTables];
         for (int i = 0; i < numTables; i++)
         {
             string tag = reader.ReadTag();
             uint checkSum = reader.ReadUInt32();
             uint offset = reader.ReadUInt32();
             uint length = reader.ReadUInt32();
+            tableRecords[i] = (tag, checkSum, offset, length);
+            Tables.RegisterTableRecord(tag, offset, length);
+        }
+
+        for (int i = 0; i < tableRecords.Length; i++)
+        {
+            var (tag, checkSum, offset, length) = tableRecords[i];
             using (var scope = reader.EnterScope(offset))
             {
                 byte[] tableBytes = reader.ReadBytes((int)length);

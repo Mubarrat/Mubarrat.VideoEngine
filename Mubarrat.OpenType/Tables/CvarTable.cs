@@ -83,12 +83,16 @@ public sealed class CvtTable : IOpenTypeTable
 
     public void Parse(ParsedTables tables, OpenTypeReader.TableScope scope)
     {
-        tables.Request<HeadTable>((head, tableScope) =>
+        if (!tables.TryGetTableRecord(Tag, out var record) || record.Length == 0)
         {
-            int count = head.UnitsPerEm;
-            Values = count > 0 ? tableScope.Reader.ReadInt16Array(count) : [];
+            Values = [];
             tables.Add(this);
-        });
+            return;
+        }
+
+        int count = checked((int)(record.Length / 2));
+        Values = count > 0 ? scope.Reader.ReadInt16Array(count) : [];
+        tables.Add(this);
     }
 }
 
@@ -100,7 +104,14 @@ public sealed class FpgmTable : IOpenTypeTable
 
     public void Parse(ParsedTables tables, OpenTypeReader.TableScope scope)
     {
-        Instructions = [];
+        if (!tables.TryGetTableRecord(Tag, out var record) || record.Length == 0)
+        {
+            Instructions = [];
+            tables.Add(this);
+            return;
+        }
+
+        Instructions = scope.Reader.ReadBytes(checked((int)record.Length));
         tables.Add(this);
     }
 }
@@ -113,7 +124,14 @@ public sealed class PrepTable : IOpenTypeTable
 
     public void Parse(ParsedTables tables, OpenTypeReader.TableScope scope)
     {
-        Instructions = [];
+        if (!tables.TryGetTableRecord(Tag, out var record) || record.Length == 0)
+        {
+            Instructions = [];
+            tables.Add(this);
+            return;
+        }
+
+        Instructions = scope.Reader.ReadBytes(checked((int)record.Length));
         tables.Add(this);
     }
 }

@@ -11,11 +11,11 @@ public struct Path2D(bool IsNonZeroFill, params Subpath[] subpaths) : ILerpable<
 
     public readonly Path2D Lerp(in Path2D target, double t)
     {
-        if (t == 0) return this;
-        if (t == 1) return target;
+        if (t <= 0) return this;
+        if (t >= 1) return target;
 
         bool fill = t < 0.5 ? IsNonZeroFill : target.IsNonZeroFill;
-
+        
         switch (Subpaths.Length, target.Subpaths.Length)
         {
             case (0, 0): return new Path2D(fill);
@@ -23,48 +23,51 @@ public struct Path2D(bool IsNonZeroFill, params Subpath[] subpaths) : ILerpable<
             case (_, 0): return Lerp(new Path2D(fill, new Subpath([])), t);
         }
 
-        var used = new bool[target.Subpaths.Length];
-        var result = new List<Subpath>(Math.Max(Subpaths.Length, target.Subpaths.Length));
+        int n = Math.Max(Subpaths.Length, target.Subpaths.Length);
 
-        foreach (var a in Subpaths)
-        {
-            int best = -1;
-            double bestScore = double.MaxValue;
+        var a = (Subpath[])Subpaths.Clone();
+        var b = (Subpath[])target.Subpaths.Clone();
 
-            for (int i = 0; i < target.Subpaths.Length; i++)
-            {
-                if (used[i]) continue;
+        // Sort both sides using same heuristic
+        Array.Sort(a, CompareSubpath);
+        Array.Sort(b, CompareSubpath);
 
-                double score =
-                    a.CenterPoint.DistanceTo(target.Subpaths[i].CenterPoint) +
-                    Math.Abs(a.Bounds.Size.Area - target.Subpaths[i].Bounds.Size.Area);
+        a = Pad(Subpaths, n);
+        b = Pad(target.Subpaths, n);
 
-                if (score < bestScore)
-                {
-                    bestScore = score;
-                    best = i;
-                }
-            }
+        var result = new Subpath[n];
 
-            if (best != -1)
-            {
-                used[best] = true;
-                result.Add(a.Lerp(target.Subpaths[best], t));
-            }
-            else
-            {
-                result.Add(a.Lerp(new Subpath([]), t));
-            }
-        }
+        for (int i = 0; i < n; i++)
+            result[i] = a[i].Lerp(b[i], t);
 
-        // remaining targets
-        for (int i = 0; i < target.Subpaths.Length; i++)
-        {
-            if (!used[i])
-                result.Add(new Subpath([]).Lerp(target.Subpaths[i], t));
-        }
+        return new Path2D(fill, result);
+    }
 
-        return new Path2D(fill, result.ToArray());
+    private static Subpath[] Pad(Subpath[] source, int n)
+    {
+        var result = new Subpath[n];
+
+        for (int i = 0; i < n; i++)
+            result[i] = i < source.Length ? source[i] : new Subpath([]);
+
+        return result;
+    }
+
+    private static int CompareSubpath(Subpath a, Subpath b)
+    {
+        var ca = a.CenterPoint;
+        var cb = b.CenterPoint;
+
+        // Primary: left → right
+        int cmp = ca.X.CompareTo(cb.X);
+        if (cmp != 0) return cmp;
+
+        // Secondary: top → bottom
+        cmp = ca.Y.CompareTo(cb.Y);
+        if (cmp != 0) return cmp;
+
+        // Tertiary: area (stable for overlaps)
+        return a.Bounds.Size.Area.CompareTo(b.Bounds.Size.Area);
     }
 
     public readonly Point CenterPoint
@@ -73,5 +76,5 @@ public struct Path2D(bool IsNonZeroFill, params Subpath[] subpaths) : ILerpable<
         get => Subpaths.Select(sp => sp.CenterPoint).ToArray().Average();
     }
 
-    public readonly Rect Bounds => Subpaths.Select(x => x.Bounds).Aggregate((a, b) => a.Union(b));
+    public readonly Rect Bounds => Subpaths.Length == 0 ? Rect.NaN : Subpaths.Select(x => x.Bounds).Aggregate((a, b) => a.Union(b));
 }
