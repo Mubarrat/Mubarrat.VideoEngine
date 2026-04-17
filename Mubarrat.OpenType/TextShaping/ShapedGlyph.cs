@@ -1,5 +1,3 @@
-using Mubarrat.OpenType;
-
 namespace Mubarrat.OpenType.TextShaping;
 
 public readonly record struct ShapedGlyph(

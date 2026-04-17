@@ -13,10 +13,13 @@ public sealed class GlyfTable : IOpenTypeTable
 
     private Vector2[][]? resolvedPoints;
     private byte[]? resolvePointsState;
+    private int[]? resolvePointsOwnerThread;
     private Vector2[][]? resolvedAlignmentPoints;
     private byte[]? resolveAlignmentState;
+    private int[]? resolveAlignmentOwnerThread;
     private GlyphOutlineContour[][]? resolvedContours;
     private byte[]? resolveContourState;
+    private int[]? resolveContourOwnerThread;
 
     public abstract record GlyphDescription;
 
@@ -91,10 +94,13 @@ public sealed class GlyfTable : IOpenTypeTable
             var glyphs = new Glyph[maxp.NumGlyphs];
             resolvedPoints = new Vector2[maxp.NumGlyphs][];
             resolvePointsState = new byte[maxp.NumGlyphs];
+            resolvePointsOwnerThread = new int[maxp.NumGlyphs];
             resolvedAlignmentPoints = new Vector2[maxp.NumGlyphs][];
             resolveAlignmentState = new byte[maxp.NumGlyphs];
+            resolveAlignmentOwnerThread = new int[maxp.NumGlyphs];
             resolvedContours = new GlyphOutlineContour[maxp.NumGlyphs][];
             resolveContourState = new byte[maxp.NumGlyphs];
+            resolveContourOwnerThread = new int[maxp.NumGlyphs];
 
             for (int i = 0; i < maxp.NumGlyphs; i++)
             {
@@ -296,39 +302,70 @@ public sealed class GlyfTable : IOpenTypeTable
 
     private Vector2[] ResolvePoints(int glyphIndex)
     {
-        var cache = resolvedPoints![glyphIndex];
-        if (cache is not null)
-            return cache;
+        var pointsCache = resolvedPoints!;
+        var state = resolvePointsState!;
+        var owner = resolvePointsOwnerThread!;
+        int currentThreadId = Environment.CurrentManagedThreadId;
 
-        if (resolvePointsState![glyphIndex] == 1)
-            throw new InvalidOperationException("Cyclic composite glyph reference.");
-
-        if (resolvePointsState[glyphIndex] == 2)
-            return resolvedPoints[glyphIndex] ?? [];
-
-        resolvePointsState[glyphIndex] = 1;
-
-        Glyph glyph = Glyphs[glyphIndex];
-        Vector2[] points;
-
-        if (glyph.Description is SimpleGlyphDescription simple)
+        while (true)
         {
-            points = new Vector2[simple.XCoordinates.Length];
-            for (int i = 0; i < points.Length; i++)
-                points[i] = new Vector2(simple.XCoordinates[i], simple.YCoordinates[i]);
-        }
-        else if (glyph.Description is CompositeGlyphDescription composite)
-        {
-            points = ResolveCompositePoints(glyphIndex, composite);
-        }
-        else
-        {
-            points = [];
-        }
+            var cache = pointsCache[glyphIndex];
+            if (cache is not null)
+                return cache;
 
-        resolvedPoints[glyphIndex] = points;
-        resolvePointsState[glyphIndex] = 2;
-        return points;
+            byte currentState = Volatile.Read(ref state[glyphIndex]);
+            if (currentState == 2)
+                return pointsCache[glyphIndex] ?? [];
+
+            if (currentState == 0)
+            {
+                if (Interlocked.CompareExchange(ref state[glyphIndex], (byte)1, (byte)0) != 0)
+                    continue;
+
+                Volatile.Write(ref owner[glyphIndex], currentThreadId);
+
+                try
+                {
+                    Glyph glyph = Glyphs[glyphIndex];
+                    Vector2[] points;
+
+                    if (glyph.Description is SimpleGlyphDescription simple)
+                    {
+                        points = new Vector2[simple.XCoordinates.Length];
+                        for (int i = 0; i < points.Length; i++)
+                            points[i] = new Vector2(simple.XCoordinates[i], simple.YCoordinates[i]);
+                    }
+                    else if (glyph.Description is CompositeGlyphDescription composite)
+                    {
+                        points = ResolveCompositePoints(glyphIndex, composite);
+                    }
+                    else
+                    {
+                        points = [];
+                    }
+
+                    pointsCache[glyphIndex] = points;
+                    Volatile.Write(ref state[glyphIndex], (byte)2);
+                    return points;
+                }
+                catch
+                {
+                    Volatile.Write(ref state[glyphIndex], (byte)0);
+                    throw;
+                }
+                finally
+                {
+                    Volatile.Write(ref owner[glyphIndex], 0);
+                }
+            }
+
+            if (Volatile.Read(ref owner[glyphIndex]) == currentThreadId)
+                throw new InvalidOperationException("Cyclic composite glyph reference.");
+
+            SpinWait spin = default;
+            while (Volatile.Read(ref state[glyphIndex]) == 1)
+                spin.SpinOnce();
+        }
     }
 
     private Vector2[] ResolveCompositePoints(int glyphIndex, CompositeGlyphDescription composite)
@@ -357,28 +394,59 @@ public sealed class GlyfTable : IOpenTypeTable
 
     private Vector2[] ResolveAlignmentPoints(int glyphIndex)
     {
-        var cache = resolvedAlignmentPoints![glyphIndex];
-        if (cache is not null)
-            return cache;
+        var alignmentCache = resolvedAlignmentPoints!;
+        var state = resolveAlignmentState!;
+        var owner = resolveAlignmentOwnerThread!;
+        int currentThreadId = Environment.CurrentManagedThreadId;
 
-        if (resolveAlignmentState![glyphIndex] == 1)
-            throw new InvalidOperationException("Cyclic composite glyph reference.");
+        while (true)
+        {
+            var cache = alignmentCache[glyphIndex];
+            if (cache is not null)
+                return cache;
 
-        if (resolveAlignmentState[glyphIndex] == 2)
-            return resolvedAlignmentPoints[glyphIndex] ?? [];
+            byte currentState = Volatile.Read(ref state[glyphIndex]);
+            if (currentState == 2)
+                return alignmentCache[glyphIndex] ?? [];
 
-        resolveAlignmentState[glyphIndex] = 1;
+            if (currentState == 0)
+            {
+                if (Interlocked.CompareExchange(ref state[glyphIndex], (byte)1, (byte)0) != 0)
+                    continue;
 
-        Vector2[] outlinePoints = ResolvePoints(glyphIndex);
-        Vector2[] phantoms = GetPhantomPoints(glyphIndex);
-        var alignmentPoints = new Vector2[outlinePoints.Length + phantoms.Length];
+                Volatile.Write(ref owner[glyphIndex], currentThreadId);
 
-        outlinePoints.CopyTo(alignmentPoints, 0);
-        phantoms.CopyTo(alignmentPoints, outlinePoints.Length);
+                try
+                {
+                    Vector2[] outlinePoints = ResolvePoints(glyphIndex);
+                    Vector2[] phantoms = GetPhantomPoints(glyphIndex);
+                    var alignmentPoints = new Vector2[outlinePoints.Length + phantoms.Length];
 
-        resolvedAlignmentPoints[glyphIndex] = alignmentPoints;
-        resolveAlignmentState[glyphIndex] = 2;
-        return alignmentPoints;
+                    outlinePoints.CopyTo(alignmentPoints, 0);
+                    phantoms.CopyTo(alignmentPoints, outlinePoints.Length);
+
+                    alignmentCache[glyphIndex] = alignmentPoints;
+                    Volatile.Write(ref state[glyphIndex], (byte)2);
+                    return alignmentPoints;
+                }
+                catch
+                {
+                    Volatile.Write(ref state[glyphIndex], (byte)0);
+                    throw;
+                }
+                finally
+                {
+                    Volatile.Write(ref owner[glyphIndex], 0);
+                }
+            }
+
+            if (Volatile.Read(ref owner[glyphIndex]) == currentThreadId)
+                throw new InvalidOperationException("Cyclic composite glyph reference.");
+
+            SpinWait spin = default;
+            while (Volatile.Read(ref state[glyphIndex]) == 1)
+                spin.SpinOnce();
+        }
     }
 
     private Vector2[] GetPhantomPoints(int glyphIndex)
@@ -417,37 +485,68 @@ public sealed class GlyfTable : IOpenTypeTable
 
     private GlyphOutlineContour[] ResolveContours(int glyphIndex)
     {
-        var cache = resolvedContours![glyphIndex];
-        if (cache is not null)
-            return cache;
+        var contourCache = resolvedContours!;
+        var state = resolveContourState!;
+        var owner = resolveContourOwnerThread!;
+        int currentThreadId = Environment.CurrentManagedThreadId;
 
-        if (resolveContourState![glyphIndex] == 1)
-            throw new InvalidOperationException("Cyclic composite glyph reference.");
-
-        if (resolveContourState[glyphIndex] == 2)
-            return resolvedContours[glyphIndex] ?? [];
-
-        resolveContourState[glyphIndex] = 1;
-
-        Glyph glyph = Glyphs[glyphIndex];
-        GlyphOutlineContour[] contours;
-
-        if (glyph.Description is SimpleGlyphDescription simple)
+        while (true)
         {
-            contours = BuildSimpleContours(simple);
-        }
-        else if (glyph.Description is CompositeGlyphDescription composite)
-        {
-            contours = ResolveCompositeContours(glyphIndex, composite);
-        }
-        else
-        {
-            contours = [];
-        }
+            var cache = contourCache[glyphIndex];
+            if (cache is not null)
+                return cache;
 
-        resolvedContours[glyphIndex] = contours;
-        resolveContourState[glyphIndex] = 2;
-        return contours;
+            byte currentState = Volatile.Read(ref state[glyphIndex]);
+            if (currentState == 2)
+                return contourCache[glyphIndex] ?? [];
+
+            if (currentState == 0)
+            {
+                if (Interlocked.CompareExchange(ref state[glyphIndex], (byte)1, (byte)0) != 0)
+                    continue;
+
+                Volatile.Write(ref owner[glyphIndex], currentThreadId);
+
+                try
+                {
+                    Glyph glyph = Glyphs[glyphIndex];
+                    GlyphOutlineContour[] contours;
+
+                    if (glyph.Description is SimpleGlyphDescription simple)
+                    {
+                        contours = BuildSimpleContours(simple);
+                    }
+                    else if (glyph.Description is CompositeGlyphDescription composite)
+                    {
+                        contours = ResolveCompositeContours(glyphIndex, composite);
+                    }
+                    else
+                    {
+                        contours = [];
+                    }
+
+                    contourCache[glyphIndex] = contours;
+                    Volatile.Write(ref state[glyphIndex], (byte)2);
+                    return contours;
+                }
+                catch
+                {
+                    Volatile.Write(ref state[glyphIndex], (byte)0);
+                    throw;
+                }
+                finally
+                {
+                    Volatile.Write(ref owner[glyphIndex], 0);
+                }
+            }
+
+            if (Volatile.Read(ref owner[glyphIndex]) == currentThreadId)
+                throw new InvalidOperationException("Cyclic composite glyph reference.");
+
+            SpinWait spin = default;
+            while (Volatile.Read(ref state[glyphIndex]) == 1)
+                spin.SpinOnce();
+        }
     }
 
     private static GlyphOutlineContour[] BuildSimpleContours(SimpleGlyphDescription simple)

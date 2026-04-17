@@ -1,13 +1,14 @@
 ﻿using Mubarrat.VideoEngine.Draw;
+using Mubarrat.VideoEngine.Path;
 
 namespace Mubarrat.VideoEngine.Objects;
 
-public abstract class FrameworkObject : BaseObject
+public abstract class FrameworkObject : BaseObject, ILerpable<FrameworkObject>
 {
     public Matrix2D LayoutTransform { get; protected set; } = Matrix2D.Identity;
     public Matrix2D RenderTransform { get; set; } = Matrix2D.Identity;
 
-    public FrameworkObject? Parent { get => (FrameworkObject?)this[ParentProperty]; protected set => this[ParentProperty] = value!; }
+    public FrameworkObject? Parent { get => (FrameworkObject?)this[ParentProperty]; set => this[ParentProperty] = value!; }
     public static readonly Property ParentProperty = new(nameof(Parent), typeof(FrameworkObject), AffectsParentMeasure: true);
 
     public double Width { get => (double)this[WidthProperty]; set => this[WidthProperty] = value; }
@@ -29,9 +30,9 @@ public abstract class FrameworkObject : BaseObject
     public bool IsMeasureValid { get; private set; }
     public bool IsArrangeValid { get; private set; }
 
-    public virtual IEnumerable<FrameworkObject> Children => [];
+    protected virtual IEnumerable<FrameworkObject> ChildrenIterator => [];
 
-    protected override object GetDefaultValue(Property property) => Parent?[property] ?? base.GetDefaultValue(property);
+    protected override object GetDefaultValue(Property property) => property == ParentProperty ? null! : (Parent?[property] ?? base.GetDefaultValue(property));
 
     protected override void OnPropertyChanged(Property property, object? oldValue, object? newValue)
     {
@@ -39,7 +40,7 @@ public abstract class FrameworkObject : BaseObject
 
         if (property.IsInherited)
         {
-            foreach (var child in Children)
+            foreach (var child in ChildrenIterator)
                 child.OnPropertyChanged(property, oldValue, newValue);
         }
 
@@ -64,7 +65,7 @@ public abstract class FrameworkObject : BaseObject
         IsMeasureValid = false;
         IsArrangeValid = false;
 
-        foreach (var child in Children)
+        foreach (var child in ChildrenIterator)
             child.InvalidateArrange();
 
         Parent?.InvalidateMeasure();
@@ -77,7 +78,7 @@ public abstract class FrameworkObject : BaseObject
 
         IsArrangeValid = false;
 
-        foreach (var child in Children)
+        foreach (var child in ChildrenIterator)
             child.InvalidateArrange();
     }
 
@@ -86,7 +87,7 @@ public abstract class FrameworkObject : BaseObject
         if (IsMeasureValid)
             return;
 
-        foreach (var child in Children)
+        foreach (var child in ChildrenIterator)
         {
             child.MeasureSubtree(GetChildMeasureConstraint(child, availableSize));
         }
@@ -103,7 +104,7 @@ public abstract class FrameworkObject : BaseObject
         Arrange(availableSize, parentTransform);
         IsArrangeValid = true;
 
-        foreach (var child in Children)
+        foreach (var child in ChildrenIterator)
         {
             var childTransform = GetChildTransform(child, availableSize, parentTransform);
             var childSize = GetChildArrangeSize(child, availableSize);
@@ -158,6 +159,9 @@ public abstract class FrameworkObject : BaseObject
         MeasureSubtree(availableSize);
         ArrangeSubtree(availableSize, transform);
     }
+
+    public virtual FrameworkObject Lerp(in FrameworkObject target, double t) => new LerpFrameworkObject(this, target, t);
+    // Default implementation returns a LerpFrameworkObject that interpolates between the two objects. Override for more efficient implementations.
 
     public abstract Drawing ToDrawing();
 }

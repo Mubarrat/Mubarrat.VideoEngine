@@ -29,6 +29,9 @@ public struct Subpath(params Edge[] edges) : ILerpable<Subpath>
             return new(Array.ConvertAll(Edges, e => e.Lerp(center, t)));
         }
 
+        if (Edges.SequenceEqual(target.Edges)) // Rare but cheap case
+            return target;
+
         int count = Math.Max(Edges.Length, target.Edges.Length);
 
         var a = SamplePoints(count);

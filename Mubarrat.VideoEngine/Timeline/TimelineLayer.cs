@@ -15,11 +15,24 @@ public class TimelineLayer
         return this;
     }
 
+    public TimelineLayer To(double second, FrameworkObject frameworkObject)
+    {
+        commands.Add(new ToFrameworkObjectTimelineCommand(second, frameworkObject));
+        return this;
+    }
+
     private class ToTimelineCommand(double second, Drawing drawing) : TimelineCommand
     {
         public override double StartTime => second;
 
-        public override Drawing? Execute(Drawing? prev, double time) => time < second ? prev : (Drawing)drawing.Clone();
+        public override BaseObject? Execute(BaseObject? prev, double time) => time < second ? prev : (Drawing)drawing.Clone();
+    }
+
+    private class ToFrameworkObjectTimelineCommand(double second, FrameworkObject frameworkObject) : TimelineCommand
+    {
+        public override double StartTime => second;
+
+        public override BaseObject? Execute(BaseObject? prev, double time) => time < second ? prev : (FrameworkObject)frameworkObject.Clone();
     }
 
     public TimelineLayer To(double fromSecond, double toSecond, Drawing drawing, IAnimator<Drawing> animator = null!, EasingFunction easingFunction = null!)
@@ -30,18 +43,52 @@ public class TimelineLayer
         return this;
     }
 
+    public TimelineLayer To(double fromSecond, double toSecond, FrameworkObject frameworkObject, IAnimator<FrameworkObject> animator = null!, EasingFunction easingFunction = null!)
+    {
+        ArgumentNullException.ThrowIfNull(frameworkObject);
+        animator ??= Lerper<FrameworkObject>.Instance;
+        easingFunction ??= EasingFunctions.Linear;
+        commands.Add(new ToFrameworkObjectWithMotionTimelineCommand(fromSecond, toSecond, frameworkObject, animator, easingFunction));
+        return this;
+    }
+
     private class ToWithMotionTimelineCommand(double fromSecond, double toSecond, Drawing drawing, IAnimator<Drawing> animator = null!, EasingFunction easingFunction = null!) : TimelineCommand
     {
         public override double StartTime => fromSecond;
 
-        public override Drawing? Execute(Drawing? prev, double time)
+        public override BaseObject? Execute(BaseObject? prev, double time)
         {
             if (time <= fromSecond)
                 return prev;
-            else if (time >= toSecond)
+            if (time >= toSecond)
                 return (Drawing)drawing.Clone();
-            else
-                return animator.Animate(prev, drawing, easingFunction((time - fromSecond) / (toSecond - fromSecond)));
+            return animator.Animate(prev switch
+            {
+                Drawing d => d,
+                FrameworkObject f => f.ToDrawing(),
+                null => new PathDrawing(),
+                _ => throw new InvalidOperationException("Previous drawing must be of type Drawing, FrameworkObject, or null")
+            }, drawing, easingFunction((time - fromSecond) / (toSecond - fromSecond)));
+        }
+    }
+
+    private class ToFrameworkObjectWithMotionTimelineCommand(double fromSecond, double toSecond, FrameworkObject frameworkObject, IAnimator<FrameworkObject> animator = null!, EasingFunction easingFunction = null!) : TimelineCommand
+    {
+        public override double StartTime => fromSecond;
+
+        public override BaseObject? Execute(BaseObject? prev, double time)
+        {
+            if (time <= fromSecond)
+                return prev;
+            if (time >= toSecond)
+                return (FrameworkObject)frameworkObject.Clone();
+            return animator.Animate(prev switch
+            {
+                FrameworkObject f => f,
+                Drawing d => new DrawingWrapperFrameworkObject(d),
+                null => new Border(),
+                _ => throw new InvalidOperationException("Previous drawing must be of type Drawing, FrameworkObject, or null")
+            }, frameworkObject, easingFunction((time - fromSecond) / (toSecond - fromSecond))).ToDrawing();
         }
     }
 
@@ -55,10 +102,10 @@ public class TimelineLayer
     {
         public override double StartTime => second;
 
-        public override Drawing? Execute(Drawing? prev, double time)
+        public override BaseObject? Execute(BaseObject? prev, double time)
         {
             if (time >= second)
-                prev[property] = value;
+                prev?[property] = value;
             return prev;
         }
     }
@@ -75,13 +122,13 @@ public class TimelineLayer
     {
         public override double StartTime => fromSecond;
 
-        public override Drawing? Execute(Drawing? prev, double time)
+        public override BaseObject? Execute(BaseObject? prev, double time)
         {
             if (time > fromSecond)
             {
-                prev[property] = time >= toSecond
+                prev?[property] = time >= toSecond
                     ? value
-                    : animator.Animate((T)prev[property], value, easingFunction((time - fromSecond) / (toSecond - fromSecond)));
+                    : animator.Animate((T)prev?[property], value, easingFunction((time - fromSecond) / (toSecond - fromSecond)));
             }
             return prev;
         }
@@ -89,7 +136,14 @@ public class TimelineLayer
 
     public void Draw(DrawingContext drawingContext, double time)
     {
-        if (commands.Where(x => x.StartTime <= time).Aggregate(new PathDrawing() as Drawing, (prev, command) => command.Execute(prev, time)) is Drawing drawing)
-            drawingContext.Draw(drawing);
+        switch (commands.Where(x => x.StartTime <= time).Aggregate(null as BaseObject, (prev, command) => command.Execute(prev, time)))
+        {
+            case Drawing drawing:
+                drawingContext.Draw(drawing);
+                break;
+            case FrameworkObject frameworkObject:
+                drawingContext.Draw(frameworkObject.ToDrawing());
+                break;
+        }
     }
 }

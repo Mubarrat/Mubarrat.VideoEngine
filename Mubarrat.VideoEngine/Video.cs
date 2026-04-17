@@ -76,66 +76,43 @@ public class Video
 
         ConcurrentBag<Exception> exceptions = [];
 
+        Thread[] workers = new Thread[framesPerChunk];
+
+        // Setup renderers
+        for (uint i = 0; i < framesPerChunk; i++)
+        {
+            uint workerId = i;
+            workers[i] = new Thread(() =>
+            {
+                for (uint j = workerId; j < TotalFrames; j += framesPerChunk)
+                {
+                    consumerEvents[workerId].Wait();
+
+                    byte* framePtr = chunkBuffer + (ulong)workerId * frameSize;
+                    NativeMemory.Clear(framePtr, frameSize);
+
+                    try
+                    {
+                        FrameSource.RenderFrame(j, (Color32*)framePtr, Width, Height);
+
+                        if (workerId == framesPerChunk - 1)
+                            Log("Renderer", ConsoleColor.Cyan, $"Rendered frame {j + 1}/{TotalFrames}");
+                    }
+                    catch (Exception ex)
+                    {
+                        exceptions.Add(ex);
+                        Log("Renderer", ConsoleColor.Red, $"Failed frame {j + 1}/{TotalFrames}");
+                    }
+
+                    producerEvents[workerId].Set();
+                    consumerEvents[workerId].Reset();
+                }
+            }) { IsBackground = true };
+            workers[i].Start();
+        }
+
         try
         {
-            // Producer task (render frames in parallel)
-            Task.Run(() =>
-            {
-                //for (uint start = 0; start < TotalFrames; start += framesPerChunk)
-                //{
-                //    double chunkStartTime = swTotal.Elapsed.TotalSeconds;
-                //    uint total = Math.Min(framesPerChunk, TotalFrames - start);
-                //    Parallel.For(0, total, i =>
-                //    {
-                //        consumerEvents[i].Wait();
-
-                //        byte* framePtr = chunkBuffer + (ulong)i * frameSize;
-                //        NativeMemory.Clear(framePtr, frameSize); // Clear the frame buffer before rendering
-
-                //        try
-                //        {
-                //            FrameSource.RenderFrame(start + (uint)i, (Color32*)framePtr, Width, Height);
-                //        }
-                //        catch (Exception ex)
-                //        {
-                //            exceptions.Add(ex); // flow exception from producer to main thread
-                //            Log("Producer", ConsoleColor.Red, $"Failed to render frame {start + i + 1}/{TotalFrames}");
-                //        }
-
-                //        producerEvents[i].Set();
-                //        consumerEvents[i].Reset();
-                //    });
-                //    double chunkEndTime = swTotal.Elapsed.TotalSeconds;
-                //    Log("Producer", ConsoleColor.Cyan, $"Rendered {start + 1}-{start + total} out of {TotalFrames} frames in {chunkEndTime - chunkStartTime:F2}s. Speedup: {(total / (double)FramesPerSecond) / (chunkEndTime - chunkStartTime):F2}x");
-                //}
-
-                Parallel.For(0, framesPerChunk, i =>
-                {
-                    for (uint j = (uint)i; j < TotalFrames; j += framesPerChunk)
-                    {
-                        consumerEvents[i].Wait();
-
-                        byte* framePtr = chunkBuffer + (ulong)i * frameSize;
-                        NativeMemory.Clear(framePtr, frameSize); // Clear the frame buffer before rendering
-
-                        try
-                        {
-                            FrameSource.RenderFrame(j, (Color32*)framePtr, Width, Height);
-                            if (i == framesPerChunk - 1)
-                                Log("Renderer", ConsoleColor.Cyan, $"Rendered frame {j + 1}/{TotalFrames}");
-                        }
-                        catch (Exception ex)
-                        {
-                            exceptions.Add(ex); // flow exception from producer to main thread
-                            Log("Renderer", ConsoleColor.Red, $"Failed to render frame {j + 1}/{TotalFrames}");
-                        }
-
-                        producerEvents[i].Set();
-                        consumerEvents[i].Reset();
-                    }
-                });
-            });
-
             using (var encoder = EncoderConstructor(Width, Height, FramesPerSecond, outputPath)!)
             {
                 // Encoder task (sequential)

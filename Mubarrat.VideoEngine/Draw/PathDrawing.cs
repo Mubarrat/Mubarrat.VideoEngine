@@ -32,10 +32,19 @@ public sealed class PathDrawing : Drawing
                 Fill = Fill.Lerp(pathDrawing.Fill, t),
                 Stroke = Stroke.Lerp(pathDrawing.Stroke, t),
                 Transform = Transform.Lerp(pathDrawing.Transform, t),
-                Opacity = Opacity.Lerp(pathDrawing.Opacity, t)
+                Opacity = Opacity.Lerp(pathDrawing.Opacity, t),
+                Name = SelectName(Name, pathDrawing.Name, t)
             };
         }
 
+        if (other is GroupDrawing)
+            return DrawingMorpher.Lerp(this, other, t);
+
         throw new NotImplementedException();
     }
+
+    private static string SelectName(string from, string to, double t)
+        => !string.IsNullOrWhiteSpace(from) && string.Equals(from, to, StringComparison.Ordinal)
+            ? from
+            : (t < 0.5 ? from : to);
 }

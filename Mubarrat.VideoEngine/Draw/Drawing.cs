@@ -4,6 +4,9 @@ namespace Mubarrat.VideoEngine.Draw;
 
 public abstract class Drawing : BaseObject, ILerpable<Drawing>
 {
+    public string Name { get => (string)this[NameProperty]; set => this[NameProperty] = value; }
+    public static readonly Property NameProperty = new(nameof(Name), typeof(string), DefaultValue: string.Empty);
+
     public Matrix2D Transform { get => (Matrix2D)this[TransformProperty]; set => this[TransformProperty] = value; }
     public static readonly Property TransformProperty = new(nameof(Transform), typeof(Matrix2D), DefaultValue: Matrix2D.Identity);
 

@@ -5,17 +5,18 @@ namespace Mubarrat.OpenType.TextShaping;
 
 public static partial class OpenTypeTextShaper
 {
-    private static readonly ConcurrentDictionary<string, HarfBuzzFaceCacheEntry> harfBuzzFaceCache = new(StringComparer.Ordinal);
+    public static bool EnableHarfBuzzShaping { get; set; } = true;
 
-    private sealed class HarfBuzzFaceCacheEntry
-    {
-        public required Face Face { get; init; }
-        public required IReadOnlyDictionary<string, Blob> TableBlobs { get; init; }
-    }
-
-    private static bool TryShapeWithHarfBuzz(string text, FontMetrics metrics, OpenTypeShapingOptions options, out ShapingResult result)
+    private static bool TryShapeWithHarfBuzz(
+        string text,
+        FontMetrics metrics,
+        OpenTypeShapingOptions options,
+        out ShapingResult result)
     {
         result = default;
+
+        if (!EnableHarfBuzzShaping)
+            return false;
 
         if (text.Length == 0)
         {
@@ -23,15 +24,9 @@ public static partial class OpenTypeTextShaper
             return true;
         }
 
-        OpenTypeShapingTableBlobs tableBlobs = OpenTypeShapingTableBlobs.FromFace(metrics.Face);
-        if (tableBlobs.Cmap.IsEmpty || tableBlobs.Head.IsEmpty || tableBlobs.Hhea.IsEmpty || tableBlobs.Hmtx.IsEmpty)
-            return false;
+        Face face = GetOrCreateFace(metrics.Face);
 
-        HarfBuzzFaceCacheEntry faceEntry = GetOrCreateHarfBuzzFace(metrics.Face.Key, tableBlobs);
-
-        using var font = new Font(faceEntry.Face);
-        font.SetFunctionsOpenType();
-        font.SetScale((int)faceEntry.Face.UnitsPerEm, (int)faceEntry.Face.UnitsPerEm);
+        using Font font = CreateFont(face);
 
         var runes = ParseRunes(text);
         var runs = ItemizeRuns(runes, options.RightToLeft);
@@ -39,20 +34,25 @@ public static partial class OpenTypeTextShaper
         var shaped = new List<ShapedGlyph>(Math.Max(text.Length, 8));
         double width = 0;
 
-        Feature[] features = BuildHarfBuzzFeatures(BuildEnabledFeatures(TextShaperScript.Unknown, options));
+        Feature[] features = BuildHarfBuzzFeatures(
+            BuildEnabledFeatures(TextShaperScript.Unknown, options));
 
         for (int runIndex = 0; runIndex < runs.Count; runIndex++)
         {
             var run = runs[runIndex];
-            bool runRightToLeft = options.RightToLeft ?? ((run.BidiLevel & 1) == 1);
+            bool rtl = options.RightToLeft ?? ((run.BidiLevel & 1) == 1);
 
-            GetUtf16RangeFromRuneRange(text, run.Start, run.Length, out int utf16Start, out int utf16End);
-            string runText = text.Substring(utf16Start, utf16End - utf16Start);
+            GetUtf16RangeFromRuneRange(text, run.Start, run.Length,
+                out int utf16Start, out int utf16End);
 
-            using var buffer = new HarfBuzzSharp.Buffer();
+            string runText = text[utf16Start..utf16End];
+
+            using HarfBuzzSharp.Buffer buffer = new();
+
             buffer.AddUtf16(runText);
-            buffer.Direction = runRightToLeft ? Direction.RightToLeft : Direction.LeftToRight;
+            buffer.Direction = rtl ? Direction.RightToLeft : Direction.LeftToRight;
             buffer.Script = MapToHarfBuzzScript(run.Script);
+
             if (!string.IsNullOrWhiteSpace(options.LanguageTag))
                 buffer.Language = new Language(options.LanguageTag);
             else
@@ -66,6 +66,7 @@ public static partial class OpenTypeTextShaper
             for (int i = 0; i < infos.Length; i++)
             {
                 double xAdvance = positions[i].XAdvance * metrics.Scale;
+
                 shaped.Add(new ShapedGlyph(
                     Face: metrics.Face,
                     GlyphId: (ushort)Math.Min(infos[i].Codepoint, ushort.MaxValue),
@@ -81,56 +82,41 @@ public static partial class OpenTypeTextShaper
         }
 
         bool singleRun = runs.Count == 1;
-        var resultScript = singleRun ? runs[0].Script : TextShaperScript.Unknown;
-        bool rtl = (singleRun && ((runs[0].BidiLevel & 1) == 1)) || options.RightToLeft == true;
+        var script = singleRun ? runs[0].Script : TextShaperScript.Unknown;
+        bool rtlFinal = singleRun
+            ? ((runs[0].BidiLevel & 1) == 1)
+            : options.RightToLeft == true;
 
-        result = new ShapingResult(shaped, width, resultScript, rtl);
+        result = new ShapingResult(shaped, width, script, rtlFinal);
         return true;
     }
 
-    private static HarfBuzzFaceCacheEntry GetOrCreateHarfBuzzFace(string faceKey, OpenTypeShapingTableBlobs tableBlobs)
+    private static unsafe Face GetOrCreateFace(FontFace face) => new((_, tag) =>
     {
-        return harfBuzzFaceCache.GetOrAdd(faceKey, _ =>
-        {
-            var blobs = new Dictionary<string, Blob>(StringComparer.Ordinal)
-            {
-                ["cmap"] = Blob.FromStream(new MemoryStream(tableBlobs.Cmap.ToArray(), writable: false)),
-                ["head"] = Blob.FromStream(new MemoryStream(tableBlobs.Head.ToArray(), writable: false)),
-                ["hhea"] = Blob.FromStream(new MemoryStream(tableBlobs.Hhea.ToArray(), writable: false)),
-                ["hmtx"] = Blob.FromStream(new MemoryStream(tableBlobs.Hmtx.ToArray(), writable: false))
-            };
+        if (!face.TryGetShapingTableBlob(tag.ToString().ToLowerInvariant(), out var bytes))
+            return Blob.Empty;
+        fixed (byte* ptr = bytes.Span)
+            return new((nint)ptr, bytes.Length, MemoryMode.ReadOnly); // Read-only since the underlying memory is immutable and shared across threads
+    });
 
-            if (!tableBlobs.Gsub.IsEmpty)
-                blobs["gsub"] = Blob.FromStream(new MemoryStream(tableBlobs.Gsub.ToArray(), writable: false));
-            if (!tableBlobs.Gpos.IsEmpty)
-                blobs["gpos"] = Blob.FromStream(new MemoryStream(tableBlobs.Gpos.ToArray(), writable: false));
-            if (!tableBlobs.Gdef.IsEmpty)
-                blobs["gdef"] = Blob.FromStream(new MemoryStream(tableBlobs.Gdef.ToArray(), writable: false));
-            if (!tableBlobs.Kern.IsEmpty)
-                blobs["kern"] = Blob.FromStream(new MemoryStream(tableBlobs.Kern.ToArray(), writable: false));
+    private static Font CreateFont(Face face)
+    {
+        var font = new Font(face);
 
-            var face = new Face((_, tag) =>
-            {
-                string key = tag.ToString().ToLowerInvariant();
-                if (blobs.TryGetValue(key, out var blob))
-                    return blob;
-                return Blob.Empty;
-            });
+        font.SetFunctionsOpenType();
+        font.SetScale(face.UnitsPerEm, face.UnitsPerEm);
 
-            return new HarfBuzzFaceCacheEntry
-            {
-                Face = face,
-                TableBlobs = blobs
-            };
-        });
+        return font;
     }
 
     private static Feature[] BuildHarfBuzzFeatures(IReadOnlyList<string> enabledFeatures)
     {
         var features = new List<Feature>(enabledFeatures.Count);
+
         for (int i = 0; i < enabledFeatures.Count; i++)
         {
             string tag = enabledFeatures[i];
+
             if (tag.Length != 4)
                 continue;
 

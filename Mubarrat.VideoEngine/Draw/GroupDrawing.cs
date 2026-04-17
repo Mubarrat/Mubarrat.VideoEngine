@@ -7,12 +7,15 @@ public sealed class GroupDrawing : Drawing
     public List<Drawing> Drawings { get => (List<Drawing>)this[DrawingsProperty]; set => this[DrawingsProperty] = value; }
     public static readonly Property DrawingsProperty = new(nameof(Drawings), typeof(List<Drawing>), DefaultValue: null);
 
-    public override Rect Bounds => Drawings.Aggregate(Rect.Empty, (a, b) => a.Union(b.Bounds)) * Transform;
+    public override Rect Bounds => (Drawings ?? []).Aggregate(Rect.Empty, (a, b) => a.Union(b.Bounds)) * Transform;
 
-    public override Drawing Lerp(in Drawing other, double t)
+    public override Drawing Lerp(in Drawing other, double t) => t switch
     {
-        throw new NotImplementedException();
-    }
+        0 => this,
+        1 => other,
+        _ when other is GroupDrawing || other is PathDrawing => DrawingMorpher.Lerp(this, other, t),
+        _ => throw new NotImplementedException()
+    };
 
     public override object Clone()
     {
