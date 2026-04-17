@@ -5,6 +5,13 @@ namespace Mubarrat.OpenType;
 
 public sealed class FontFace
 {
+    private static readonly HashSet<string> shapingTableTags = new(StringComparer.Ordinal)
+    {
+        "cmap", "head", "hhea", "hmtx", "gsub", "gpos", "gdef", "kern", "fvar", "avar", "hvar"
+    };
+
+    private readonly Dictionary<string, byte[]> shapingTableBlobs = new(StringComparer.Ordinal);
+
     public string Key { get; }
 
     public ParsedTables Tables { get; }
@@ -39,6 +46,9 @@ public sealed class FontFace
             {
                 byte[] tableBytes = reader.ReadBytes((int)length);
 
+                if (shapingTableTags.Contains(tag))
+                    shapingTableBlobs[tag] = [.. tableBytes];
+
                 if (tag == "head")
                     tableBytes[8] = tableBytes[9] = tableBytes[10] = tableBytes[11] = 0;
 
@@ -53,6 +63,18 @@ public sealed class FontFace
                 IOpenTypeTable.GetEmptyTableFromTag(tag)?.Parse(Tables, scope);
             }
         }
+    }
+
+    internal bool TryGetShapingTableBlob(string tag, out ReadOnlyMemory<byte> blob)
+    {
+        if (shapingTableBlobs.TryGetValue(tag, out var bytes))
+        {
+            blob = bytes;
+            return true;
+        }
+
+        blob = default;
+        return false;
     }
 
     public static uint CalcTableChecksum(ReadOnlySpan<byte> table)

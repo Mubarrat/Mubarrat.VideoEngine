@@ -51,7 +51,7 @@ public class Video
         // Over number means cpu has to decide which thread should it run and it can add overhead.
         // Under number means not efficiently using full cpu to render all frames.
         // For debugger, we should use only 1 thread because it becomes very hard to debug if there's multiple thread.
-        uint framesPerChunk = Debugger.IsAttached ? 1u : (uint)Environment.ProcessorCount - 1; // Leave 1 core because it's main thread
+        uint framesPerChunk = Debugger.IsAttached ? 1u : (uint)Environment.ProcessorCount; // Leave 1 core because it's main thread
 
         // Allocate a large buffer for a chunk of frames. Each frame is Width * Height * 4 bytes (BGRA).
         // Using a single large buffer for the chunk reduces overhead compared to allocating separate buffers for each frame.
@@ -122,12 +122,12 @@ public class Video
                         {
                             FrameSource.RenderFrame(j, (Color32*)framePtr, Width, Height);
                             if (i == framesPerChunk - 1)
-                                Log("Producer", ConsoleColor.Cyan, $"Rendered frame {j + 1}/{TotalFrames}");
+                                Log("Renderer", ConsoleColor.Cyan, $"Rendered frame {j + 1}/{TotalFrames}");
                         }
                         catch (Exception ex)
                         {
                             exceptions.Add(ex); // flow exception from producer to main thread
-                            Log("Producer", ConsoleColor.Red, $"Failed to render frame {j + 1}/{TotalFrames}");
+                            Log("Renderer", ConsoleColor.Red, $"Failed to render frame {j + 1}/{TotalFrames}");
                         }
 
                         producerEvents[i].Set();

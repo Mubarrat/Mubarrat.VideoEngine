@@ -10,7 +10,7 @@ public sealed record OpenTypeShapingOptions(
     string? LanguageTag = null,
     int? MaxContextLookupRecursion = null,
     IReadOnlyDictionary<string, float>? VariationCoordinates = null,
-    bool ApplyIndicPreReordering = false,
+    bool ApplyIndicPreReordering = true,
     bool NormalizeInputToFormC = false,
     bool EnableLegacyKernFallback = true)
 {

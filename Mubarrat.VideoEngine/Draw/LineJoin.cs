@@ -1,4 +1,4 @@
-﻿namespace Mubarrat.VideoEngine;
+﻿namespace Mubarrat.VideoEngine.Draw;
 
 public enum LineJoin
 {

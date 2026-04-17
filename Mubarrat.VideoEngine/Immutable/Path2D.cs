@@ -32,8 +32,8 @@ public struct Path2D(bool IsNonZeroFill, params Subpath[] subpaths) : ILerpable<
         Array.Sort(a, CompareSubpath);
         Array.Sort(b, CompareSubpath);
 
-        a = Pad(Subpaths, n);
-        b = Pad(target.Subpaths, n);
+        a = Pad(a, n);
+        b = Pad(b, n);
 
         var result = new Subpath[n];
 

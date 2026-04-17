@@ -13,21 +13,14 @@ public static class ShapingResultPathExtensions
     /// <summary>
     /// Converts a shaped text run into a <see cref="PathBuilder"/> using the glyph outlines from the font.
     /// </summary>
-    public static PathBuilder ToPathBuilder(this ShapingResult shapingResult, FontMetrics metrics, Point origin, bool flipY = true)
+    public static PathBuilder ToPathBuilder(this ShapingResult shapingResult, double fontSize, Point origin, bool flipY = true)
     {
         ArgumentNullException.ThrowIfNull(shapingResult);
-        ArgumentNullException.ThrowIfNull(metrics);
-
-        bool hasGlyf = metrics.Face.Tables.TryGet(out GlyfTable? glyf);
-        bool hasCff = metrics.Face.Tables.TryGet(out CffTable? cff);
-
-        if (!hasGlyf && !hasCff)
-            throw new InvalidOperationException("The font does not contain supported outlines (glyf or CFF). ");
 
         var builder = new PathBuilder();
         double penX = origin.X;
         double penY = origin.Y;
-        double ppem = metrics.FontSize;
+        double ppem = fontSize;
 
         for (int i = 0; i < shapingResult.Glyphs.Count; i++)
         {
@@ -35,11 +28,18 @@ public static class ShapingResultPathExtensions
             double glyphOriginX = penX + glyph.XOffset;
             double glyphOriginY = penY + glyph.YOffset;
 
+            glyph.Face.Tables.TryGet(out HeadTable head);
+            bool hasGlyf = glyph.Face.Tables.TryGet(out GlyfTable? glyf);
+            bool hasCff = glyph.Face.Tables.TryGet(out CffTable? cff);
+
+            if (!hasGlyf && !hasCff)
+                throw new InvalidOperationException("The font does not contain supported outlines (glyf or CFF). ");
+
+            double scale = fontSize / head.UnitsPerEm;
+
             if (hasGlyf && glyph.GlyphId < glyf!.Glyphs.Length)
             {
                 var contours = glyf.GetContours(glyph.GlyphId);
-
-                double scale = metrics.Scale;
 
                 for (int contourIndex = 0; contourIndex < contours.Length; contourIndex++)
                 {
@@ -49,7 +49,7 @@ public static class ShapingResultPathExtensions
             }
             else if (hasCff && glyph.GlyphId < cff!.CharStrings.Length)
             {
-                AppendCffGlyph(builder, cff, glyph.GlyphId, glyphOriginX, glyphOriginY, metrics.Scale, flipY);
+                AppendCffGlyph(builder, cff, glyph.GlyphId, glyphOriginX, glyphOriginY, scale, flipY);
             }
 
             penX += glyph.XAdvance;
@@ -62,20 +62,20 @@ public static class ShapingResultPathExtensions
     /// <summary>
     /// Converts a shaped text run into a <see cref="PathBuilder"/> using origin (0,0).
     /// </summary>
-    public static PathBuilder ToPathBuilder(this ShapingResult shapingResult, FontMetrics metrics, bool flipY = true)
-        => shapingResult.ToPathBuilder(metrics, Point.Zero, flipY);
+    public static PathBuilder ToPathBuilder(this ShapingResult shapingResult, double fontSize, bool flipY = true)
+        => shapingResult.ToPathBuilder(fontSize, Point.Zero, flipY);
 
     /// <summary>
     /// Converts a shaped text run to <see cref="Path2D"/> through <see cref="PathBuilder"/>.
     /// </summary>
-    public static Path2D ToPath2D(this ShapingResult shapingResult, FontMetrics metrics, Point origin, bool isNonZeroFill = true, bool flipY = true)
-        => shapingResult.ToPathBuilder(metrics, origin, flipY).Build(isNonZeroFill);
+    public static Path2D ToPath2D(this ShapingResult shapingResult, double fontSize, Point origin, bool isNonZeroFill = true, bool flipY = true)
+        => shapingResult.ToPathBuilder(fontSize, origin, flipY).Build(isNonZeroFill);
 
     /// <summary>
     /// Converts a shaped text run to <see cref="Path2D"/> through <see cref="PathBuilder"/> using origin (0,0).
     /// </summary>
-    public static Path2D ToPath2D(this ShapingResult shapingResult, FontMetrics metrics, bool isNonZeroFill = true, bool flipY = true)
-        => shapingResult.ToPathBuilder(metrics, Point.Zero, flipY).Build(isNonZeroFill);
+    public static Path2D ToPath2D(this ShapingResult shapingResult, double fontSize, bool isNonZeroFill = true, bool flipY = true)
+        => shapingResult.ToPathBuilder(fontSize, Point.Zero, flipY).Build(isNonZeroFill);
 
     private static void AppendContour(
         PathBuilder builder,
