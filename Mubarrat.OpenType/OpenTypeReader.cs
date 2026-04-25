@@ -236,6 +236,8 @@ public sealed class OpenTypeReader : IDisposable
 
         public T ParseCommonTable<T>(long relativeOffset, object? param = null) where T : IOpenTypeCommonTable<T>
         {
+            if (relativeOffset == 0)
+                return default;
             using (var scope = EnterScope(relativeOffset))
                 return T.Parse(scope, param);
         }

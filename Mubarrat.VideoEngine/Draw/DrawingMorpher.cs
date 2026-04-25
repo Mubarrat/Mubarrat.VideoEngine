@@ -9,8 +9,8 @@ internal static class DrawingMorpher
         var fromNodes = new List<MorphNode>(16);
         var toNodes = new List<MorphNode>(16);
 
-        AppendLeaves(from, Matrix2D.Identity, 1, null, fromNodes);
-        AppendLeaves(to, Matrix2D.Identity, 1, null, toNodes);
+        AppendLeaves(from, Matrix2D.Identity, 1, null, null, default, fromNodes);
+        AppendLeaves(to, Matrix2D.Identity, 1, null, null, default, toNodes);
 
         if (fromNodes.Count == 0)
             fromNodes.Add(CreatePlaceholderNode(toNodes.Count > 0 ? toNodes[0].Name : string.Empty));
@@ -138,7 +138,14 @@ internal static class DrawingMorpher
         return indices;
     }
 
-    private static void AppendLeaves(Drawing drawing, Matrix2D parentTransform, double parentOpacity, string? inheritedName, List<MorphNode> output)
+    private static void AppendLeaves(
+        Drawing drawing,
+        Matrix2D parentTransform,
+        double parentOpacity,
+        string? inheritedName,
+        IBrush? inheritedFill,
+        Pen inheritedStroke,
+        List<MorphNode> output)
     {
         string? effectiveName = string.IsNullOrWhiteSpace(drawing.Name) ? inheritedName : drawing.Name;
 
@@ -149,8 +156,8 @@ internal static class DrawingMorpher
                 var flattened = new PathDrawing
                 {
                     Path = path.Path,
-                    Fill = path.Fill,
-                    Stroke = path.Stroke,
+                    Fill = path.Fill ?? inheritedFill,
+                    Stroke = path.Stroke.Brush is null ? inheritedStroke : path.Stroke,
                     Transform = parentTransform * path.Transform,
                     Opacity = parentOpacity * path.Opacity,
                     Name = effectiveName ?? string.Empty
@@ -173,13 +180,15 @@ internal static class DrawingMorpher
             {
                 Matrix2D nextTransform = parentTransform * group.Transform;
                 double nextOpacity = parentOpacity * group.Opacity;
+                IBrush? nextFill = group.Fill ?? inheritedFill;
+                Pen nextStroke = group.Stroke.Brush is null ? inheritedStroke : group.Stroke;
 
                 var children = group.Drawings;
                 if (children is null || children.Count == 0)
                     return;
 
                 for (int i = 0; i < children.Count; i++)
-                    AppendLeaves(children[i], nextTransform, nextOpacity, effectiveName, output);
+                    AppendLeaves(children[i], nextTransform, nextOpacity, effectiveName, nextFill, nextStroke, output);
 
                 break;
             }

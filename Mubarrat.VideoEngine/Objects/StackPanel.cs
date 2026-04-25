@@ -10,32 +10,29 @@ public class StackPanel : Panel
 
     public override Size OnMeasure(Size availableSize)
     {
-        double totalPrimary = 0;
-        double maxCross = 0;
-        int count = 0;
-
+        Size measured = Size.Zero;
         foreach (var child in ChildrenIterator)
         {
             var desired = child.DesiredSize;
             if (Orientation == Orientation.Vertical)
             {
-                totalPrimary += desired.Height;
-                maxCross = Math.Max(maxCross, desired.Width);
+                measured.Width = Math.Max(measured.Width, desired.Width);
+                measured.Height += desired.Height;
             }
             else
             {
-                totalPrimary += desired.Width;
-                maxCross = Math.Max(maxCross, desired.Height);
+                measured.Width += desired.Width;
+                measured.Height = Math.Max(measured.Height, desired.Height);
             }
-            count++;
         }
-
-        if (count > 1)
-            totalPrimary += Spacing * (count - 1);
-
-        return Orientation == Orientation.Vertical
-            ? new Size(maxCross, totalPrimary)
-            : new Size(totalPrimary, maxCross);
+        if (Children.Count > 1)
+        {
+            if (Orientation == Orientation.Horizontal)
+                measured.Width += Spacing * (Children.Count - 1);
+            else
+                measured.Height += Spacing * (Children.Count - 1);
+        }
+        return measured;
     }
 
     protected override Size GetChildMeasureConstraint(FrameworkObject child, Size availableSize)
@@ -43,25 +40,20 @@ public class StackPanel : Panel
             ? new Size(availableSize.Width, double.PositiveInfinity)
             : new Size(double.PositiveInfinity, availableSize.Height);
 
-    protected override Matrix2D GetChildTransform(FrameworkObject child, Size availableSize, Matrix2D parentTransform)
+    public override void OnArrange(Size finalSize, Matrix2D transform)
     {
         double offset = 0;
-        foreach (var current in ChildrenIterator)
-        {
-            if (ReferenceEquals(current, child))
-                break;
-
-            offset += Orientation == Orientation.Vertical ? current.DesiredSize.Height : current.DesiredSize.Width;
-            offset += Spacing;
-        }
-
-        return Orientation == Orientation.Vertical
-            ? parentTransform * Matrix2D.Translate(0, offset)
-            : parentTransform * Matrix2D.Translate(offset, 0);
+        if (Orientation == Orientation.Vertical)
+            foreach (var current in ChildrenIterator)
+            {
+                current.Arrange(new(finalSize.Width, current.DesiredSize.Height), Matrix2D.Translate(0, offset));
+                offset += current.DesiredSize.Height + Spacing;
+            }
+        else
+            foreach (var current in ChildrenIterator)
+            {
+                current.Arrange(new(current.DesiredSize.Width, finalSize.Height), Matrix2D.Translate(offset, 0));
+                offset += current.DesiredSize.Width + Spacing;
+            }
     }
-
-    protected override Size GetChildArrangeSize(FrameworkObject child, Size availableSize)
-        => Orientation == Orientation.Vertical
-            ? new Size(availableSize.Width, child.DesiredSize.Height)
-            : new Size(child.DesiredSize.Width, availableSize.Height);
 }

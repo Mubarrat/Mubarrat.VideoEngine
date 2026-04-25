@@ -1,4 +1,6 @@
-﻿namespace Mubarrat.OpenType.CommonTables;
+﻿using System.Runtime.CompilerServices;
+
+namespace Mubarrat.OpenType.CommonTables;
 
 public readonly record struct Coverage(ushort[]? GlyphArray, RangeRecord[]? Ranges) : IOpenTypeCommonTable<Coverage>
 {
@@ -12,6 +14,8 @@ public readonly record struct Coverage(ushort[]? GlyphArray, RangeRecord[]? Rang
             _ => throw new NotSupportedException($"Unsupported Coverage format: {format}")
         };
     }
+
+    public ushort? this[ushort glyphId] { [MethodImpl(MethodImplOptions.AggressiveInlining)] get => TryGetIndex(glyphId, out var index) ? index : null; }
 
     public bool TryGetIndex(ushort glyphId, out ushort coverageIndex)
     {

@@ -97,12 +97,12 @@ public class WrapPanel : Panel
     protected override Size GetChildMeasureConstraint(FrameworkObject child, Size availableSize)
         => availableSize;
 
-    protected override Matrix2D GetChildTransform(FrameworkObject child, Size availableSize, Matrix2D parentTransform)
+    protected override Matrix2D GetChildTransform(FrameworkObject child, Size availableSize)
     {
         if (!arrangedSlots.TryGetValue(child, out var slot))
-            return parentTransform;
+            return Matrix2D.Identity;
 
-        return parentTransform * Matrix2D.Translate(slot.X, slot.Y);
+        return Matrix2D.Translate(slot.X, slot.Y);
     }
 
     protected override Size GetChildArrangeSize(FrameworkObject child, Size availableSize)

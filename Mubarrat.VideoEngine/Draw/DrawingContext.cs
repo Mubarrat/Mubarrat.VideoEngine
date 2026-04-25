@@ -1,4 +1,5 @@
 using Mubarrat.VideoEngine.Immutable;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace Mubarrat.VideoEngine.Draw;
@@ -8,11 +9,19 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
     private const double FillSubsampleWeight = 0.5;
     private const double StrokeSampleWeight = 0.25;
     private const double MiterLimit = 4.0;
+    private const float FillIntersectionMergeEpsilon = 1e-4f;
+    private const float FillHorizontalEdgeEpsilon = 1e-5f;
+    private const float FillSubpixelGrid = 4096f;
+    private const double FillMinimumSpan = 1e-6;
 
     private readonly Stack<(Matrix2D Transform, double Opacity)> stateStack = new();
+    private readonly Stack<InheritedPaintState> paintStack = new();
 
     private (Matrix2D Transform, double Opacity) CurrentState =>
         stateStack.Count > 0 ? stateStack.Peek() : (Matrix2D.Identity, 1);
+
+    private InheritedPaintState CurrentPaint =>
+        paintStack.Count > 0 ? paintStack.Peek() : new(null, default, Rect.NaN);
 
     public void PushTransform(Matrix2D transform) => PushState(transform, 1);
     public void PushOpacity(double opacity) => PushState(Matrix2D.Identity, opacity);
@@ -34,15 +43,33 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
         switch (drawing)
         {
             case PathDrawing pd:
+                var inheritedPaint = CurrentPaint;
+                IBrush? effectiveFill = pd.Fill ?? inheritedPaint.Fill;
+                Pen effectiveStroke = pd.Stroke.Brush is null ? inheritedPaint.Stroke : pd.Stroke;
+                Rect? fillSamplingBounds = pd.Fill is null ? NormalizeRectOrNull(inheritedPaint.ScopeBounds) : null;
+                Rect? strokeSamplingBounds = pd.Stroke.Brush is null ? NormalizeRectOrNull(inheritedPaint.ScopeBounds) : null;
+
                 PushState(pd.Transform, pd.Opacity);
-                try { DrawPath(pd.Path, pd.Fill, pd.Stroke); }
+                try { DrawPath(pd.Path, effectiveFill, effectiveStroke, fillSamplingBounds, strokeSamplingBounds); }
                 finally { Pop(); }
                 break;
 
             case GroupDrawing gd:
+                var parentPaint = CurrentPaint;
+                IBrush? groupFill = gd.Fill ?? parentPaint.Fill;
+                Pen groupStroke = gd.Stroke.Brush is null ? parentPaint.Stroke : gd.Stroke;
+                Rect scopeBounds = ((gd.Bounds * CurrentState.Transform).Normalized);
+                if (!IsFiniteRect(scopeBounds))
+                    scopeBounds = parentPaint.ScopeBounds;
+
+                paintStack.Push(new InheritedPaintState(groupFill, groupStroke, scopeBounds));
                 PushState(gd.Transform, gd.Opacity);
                 try { gd.Drawings.ForEach(Draw); }
-                finally { Pop(); }
+                finally
+                {
+                    Pop();
+                    paintStack.Pop();
+                }
                 break;
 
             default:
@@ -50,7 +77,7 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
         }
     }
 
-    public void DrawPath(Path2D path, IBrush fill, Pen stroke)
+    public void DrawPath(Path2D path, IBrush? fill, Pen stroke, Rect? fillSamplingBounds = null, Rect? strokeSamplingBounds = null)
     {
         if (path.Subpaths is null || path.Subpaths.Length == 0) return;
 
@@ -71,10 +98,12 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
         // ---------------------
         // Compute shape bounds in device space and normalize
         var deviceBounds = (path.Bounds * transform).Normalized;
+        var effectiveFillBounds = fillSamplingBounds ?? deviceBounds;
+        var effectiveStrokeBounds = strokeSamplingBounds ?? deviceBounds;
 
         if (hasFill)
         {
-            FillRasterizer(path, fill!, transform, invW, invH, opacity, fullOpacity, w, h, deviceBounds);
+            FillRasterizer(path, fill!, transform, invW, invH, opacity, fullOpacity, w, h, effectiveFillBounds);
         }
 
         // ---------------------
@@ -82,11 +111,11 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
         // ---------------------
         if (hasStroke)
         {
-            StrokeRasterizer(path, stroke, transform, invW, invH, opacity, fullOpacity, w, h, deviceBounds);
+            StrokeRasterizer(path, stroke, transform, invW, invH, opacity, fullOpacity, w, h, effectiveStrokeBounds);
         }
     }
 
-    private void FillRasterizer(Path2D path, IBrush fill, Matrix2D transform, double invW, double invH, float opacity, bool fullOpacity, int w, int h, Rect deviceBounds)
+    private void FillRasterizer(Path2D path, IBrush fill, Matrix2D transform, double invW, double invH, float opacity, bool fullOpacity, int w, int h, Rect samplingBounds)
     {
         int maxEdges = 0;
         foreach (var sub in path.Subpaths)
@@ -120,11 +149,18 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
                     var (x1d, y1d) = e.Point1 * transform;
                     var (x2d, y2d) = e.Point2 * transform;
 
-                    if (y1d == y2d) continue;
+                    if (!double.IsFinite(x1d) || !double.IsFinite(y1d) || !double.IsFinite(x2d) || !double.IsFinite(y2d))
+                        continue;
 
                     float x1 = (float)x1d, y1 = (float)y1d, x2 = (float)x2d, y2 = (float)y2d;
 
-                    float dy = y2 - y1, dx = (x2 - x1) / dy;
+                    float dy = y2 - y1;
+                    if (MathF.Abs(dy) <= FillHorizontalEdgeEpsilon)
+                        continue;
+
+                    float dx = (x2 - x1) / dy;
+                    if (!float.IsFinite(dx))
+                        continue;
 
                     int startY = (int)MathF.Ceiling(MathF.Min(y1, y2) - 0.5f);
                     int endY = (int)MathF.Ceiling(MathF.Max(y1, y2) - 0.5f);
@@ -137,9 +173,13 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
 
                     if (startY >= endY) continue;
 
+                    float startX = x1 + (startY + 0.5f - y1) * dx;
+                    if (!float.IsFinite(startX))
+                        continue;
+
                     int idx = edgeCount++;
 
-                    edges[idx].X = x1 + (startY + 0.5f - y1) * dx;
+                    edges[idx].X = QuantizeFillX(startX);
                     edges[idx].Dx = dx;
                     edges[idx].EndY = endY;
                     edges[idx].Winding = dy > 0 ? 1 : -1;
@@ -152,10 +192,10 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
             int activeCount = 0;
 
             // Shape-relative sampling: convert device pixel centers to 0..1 within the shape bounds
-            double shapeLeft = deviceBounds.Left;
-            double shapeTop = deviceBounds.Top;
-            double shapeW = deviceBounds.Width;
-            double shapeH = deviceBounds.Height;
+            double shapeLeft = samplingBounds.Left;
+            double shapeTop = samplingBounds.Top;
+            double shapeW = samplingBounds.Width;
+            double shapeH = samplingBounds.Height;
 
             double invShapeW = shapeW != 0 ? 1.0 / shapeW : invW;
             double invShapeH = shapeH != 0 ? 1.0 / shapeH : invH;
@@ -239,46 +279,99 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
         double sy = (sampleY - shapeTop) * invShapeH;
         double syClamped = Math.Clamp(sy, 0.0, 1.0);
 
-        int winding = 0;
-        for (int i = 0; i + 1 < activeCount; i++)
+        int fillState = 0;
+        bool inside = false;
+        double spanStart = 0;
+
+        for (int i = 0; i < activeCount;)
         {
-            int current = sorted[i];
-            int next = sorted[i + 1];
+            int edgeIndex = sorted[i];
+            double x = QuantizeFillX(edges[edgeIndex].X + edges[edgeIndex].Dx * sampleDelta);
 
-            winding += edges[current].Winding;
-            if (isNonZeroFill && winding == 0)
-                continue;
+            int delta = isNonZeroFill ? 0 : 0;
+            int crossings = 0;
 
-            double xStart = edges[current].X + edges[current].Dx * sampleDelta;
-            double xEnd = edges[next].X + edges[next].Dx * sampleDelta;
-
-            if (xEnd <= xStart)
-                continue;
-
-            int x0 = Math.Max(0, (int)Math.Floor(xStart));
-            int x1 = Math.Min(w - 1, (int)Math.Ceiling(xEnd) - 1);
-            if (x0 > x1)
-                continue;
-
-            for (int x = x0; x <= x1; x++)
+            int j = i;
+            while (j < activeCount)
             {
-                double coverage = Math.Min(xEnd, x + 1.0) - Math.Max(xStart, x);
-                if (coverage <= 0)
-                    continue;
+                int groupedEdge = sorted[j];
+                double gx = QuantizeFillX(edges[groupedEdge].X + edges[groupedEdge].Dx * sampleDelta);
+                if (Math.Abs(gx - x) > FillIntersectionMergeEpsilon)
+                    break;
 
-                double sx = (x + 0.5 - shapeLeft) * invShapeW;
-                double sxClamped = Math.Clamp(sx, 0.0, 1.0);
-                double alpha = opacity * sampleWeight * coverage;
-                if (alpha <= 0)
-                    continue;
+                if (isNonZeroFill)
+                    delta += edges[groupedEdge].Winding;
+                else
+                    crossings++;
 
-                Color32.BlendPremultiplied(fill.Sample(sxClamped, syClamped).ToPremultiplied * alpha, ref row[x]);
+                j++;
             }
+
+            bool wasInside = inside;
+
+            if (isNonZeroFill)
+            {
+                fillState += delta;
+                inside = fillState != 0;
+            }
+            else
+            {
+                fillState += crossings;
+                inside = (fillState & 1) != 0;
+            }
+
+            if (!wasInside && inside)
+            {
+                spanStart = x;
+            }
+            else if (wasInside && !inside)
+            {
+                DrawFillSpan(fill, row, w, shapeLeft, invShapeW, syClamped, opacity, sampleWeight, spanStart, x);
+            }
+
+            i = j;
         }
     }
 
+    private static void DrawFillSpan(IBrush fill, Color32* row, int width, double shapeLeft, double invShapeW,
+        double syClamped, float opacity, double sampleWeight, double xStart, double xEnd)
+    {
+        if (!double.IsFinite(xStart) || !double.IsFinite(xEnd))
+            return;
+
+        if (xEnd <= xStart)
+            return;
+
+        if (xEnd - xStart <= FillMinimumSpan)
+            return;
+
+        int x0 = Math.Max(0, (int)Math.Floor(xStart));
+        int x1 = Math.Min(width - 1, (int)Math.Ceiling(xEnd) - 1);
+        if (x0 > x1)
+            return;
+
+        for (int x = x0; x <= x1; x++)
+        {
+            double coverage = Math.Min(xEnd, x + 1.0) - Math.Max(xStart, x);
+            if (coverage <= 0)
+                continue;
+
+            double sx = (x + 0.5 - shapeLeft) * invShapeW;
+            double sxClamped = Math.Clamp(sx, 0.0, 1.0);
+            double alpha = opacity * sampleWeight * coverage;
+            if (alpha <= 0)
+                continue;
+
+            Color32.BlendPremultiplied(fill.Sample(sxClamped, syClamped).ToPremultiplied * alpha, ref row[x]);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static float QuantizeFillX(double x)
+        => (float)(Math.Round(x * FillSubpixelGrid) / FillSubpixelGrid);
+
     private void StrokeRasterizer(Path2D path, Pen stroke, Matrix2D transform,
-        double invW, double invH, float opacity, bool fullOpacity, int w, int h, Rect deviceBounds)
+        double invW, double invH, float opacity, bool fullOpacity, int w, int h, Rect samplingBounds)
     {
         double radius = stroke.Thickness * 0.5;
         double r2 = radius * radius;
@@ -309,7 +402,7 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
                     if (len <= 0)
                     {
                         segments[i] = new StrokeSegmentInfo(x1, y1, x2, y2, 0, 0, 0, 0, 0, false);
-                        DrawStrokePoint(firstPixel, w, h, x1, y1, radius, r2, stroke, invW, invH, opacity, deviceBounds);
+                        DrawStrokePoint(firstPixel, w, h, x1, y1, radius, r2, stroke, invW, invH, opacity, samplingBounds);
                         continue;
                     }
 
@@ -321,7 +414,7 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
                     segments[i] = new StrokeSegmentInfo(x1, y1, x2, y2, ux, uy, vx, vy, len, true);
 
                     DrawStrokeSegment(firstPixel, w, h, x1, y1, x2, y2, ux, uy, vx, vy,
-                        len, radius, r2, stroke, stroke.Cap, invW, invH, opacity, deviceBounds);
+                        len, radius, r2, stroke, stroke.Cap, invW, invH, opacity, samplingBounds);
                 }
 
                 bool closed = segmentCount > 1
@@ -347,7 +440,7 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
                         nextSegment.Ux, nextSegment.Uy,
                         radius, r2,
                         stroke, stroke.Join,
-                        invW, invH, opacity, deviceBounds);
+                        invW, invH, opacity, samplingBounds);
                 }
 
                 continue;
@@ -369,7 +462,7 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
 
                 if (len <= 0)
                 {
-                    DrawStrokePoint(firstPixel, w, h, x1, y1, radius, r2, stroke, invW, invH, opacity, deviceBounds);
+                    DrawStrokePoint(firstPixel, w, h, x1, y1, radius, r2, stroke, invW, invH, opacity, samplingBounds);
                     continue;
                 }
 
@@ -397,7 +490,7 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
                         double t1 = (consumed + step) / len;
                         DrawStrokeSegment(firstPixel, w, h,
                             x1 + dx * t0, y1 + dy * t0, x1 + dx * t1, y1 + dy * t1,
-                            ux, uy, vx, vy, step, radius, r2, stroke, stroke.Cap, invW, invH, opacity, deviceBounds);
+                            ux, uy, vx, vy, step, radius, r2, stroke, stroke.Cap, invW, invH, opacity, samplingBounds);
                     }
 
                     consumed += step;
@@ -413,7 +506,7 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
         double ux1, double uy1,
         double radius, double r2,
         Pen stroke, LineJoin join,
-        double invW, double invH, double opacity, Rect deviceBounds)
+        double invW, double invH, double opacity, Rect samplingBounds)
     {
         double turn = ux0 * uy1 - uy0 * ux1;
         if (Math.Abs(turn) <= 1e-10)
@@ -440,7 +533,7 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
         switch (join)
         {
             case LineJoin.Round:
-                DrawRoundJoin(firstPixel, w, h, cx, cy, ax, ay, bx, by, r2, stroke, invW, invH, opacity, deviceBounds);
+                DrawRoundJoin(firstPixel, w, h, cx, cy, ax, ay, bx, by, r2, stroke, invW, invH, opacity, samplingBounds);
                 return;
 
             case LineJoin.Miter:
@@ -449,14 +542,14 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
                     double miterLength = Math.Sqrt((mx - cx) * (mx - cx) + (my - cy) * (my - cy));
                     if (miterLength <= radius * MiterLimit)
                     {
-                        DrawTriangleJoin(firstPixel, w, h, ax, ay, mx, my, bx, by, stroke, invW, invH, opacity, deviceBounds);
+                        DrawTriangleJoin(firstPixel, w, h, ax, ay, mx, my, bx, by, stroke, invW, invH, opacity, samplingBounds);
                         return;
                     }
                 }
                 break;
         }
 
-        DrawTriangleJoin(firstPixel, w, h, cx, cy, ax, ay, bx, by, stroke, invW, invH, opacity, deviceBounds);
+        DrawTriangleJoin(firstPixel, w, h, cx, cy, ax, ay, bx, by, stroke, invW, invH, opacity, samplingBounds);
     }
 
     private void DrawRoundJoin(Color32* firstPixel, int w, int h,
@@ -465,17 +558,17 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
         double bx, double by,
         double r2,
         Pen stroke,
-        double invW, double invH, double opacity, Rect deviceBounds)
+        double invW, double invH, double opacity, Rect samplingBounds)
     {
         int minX = Math.Clamp((int)Math.Floor(cx - Math.Sqrt(r2)), 0, w - 1);
         int maxX = Math.Clamp((int)Math.Ceiling(cx + Math.Sqrt(r2)), 0, w - 1);
         int minY = Math.Clamp((int)Math.Floor(cy - Math.Sqrt(r2)), 0, h - 1);
         int maxY = Math.Clamp((int)Math.Ceiling(cy + Math.Sqrt(r2)), 0, h - 1);
 
-        double shapeLeft = deviceBounds.Left;
-        double shapeTop = deviceBounds.Top;
-        double shapeW = deviceBounds.Width;
-        double shapeH = deviceBounds.Height;
+        double shapeLeft = samplingBounds.Left;
+        double shapeTop = samplingBounds.Top;
+        double shapeW = samplingBounds.Width;
+        double shapeH = samplingBounds.Height;
         double invShapeW = shapeW != 0 ? 1.0 / shapeW : invW;
         double invShapeH = shapeH != 0 ? 1.0 / shapeH : invH;
 
@@ -515,17 +608,17 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
         double x2, double y2,
         double x3, double y3,
         Pen stroke,
-        double invW, double invH, double opacity, Rect deviceBounds)
+        double invW, double invH, double opacity, Rect samplingBounds)
     {
         int minX = Math.Clamp((int)Math.Floor(Math.Min(x1, Math.Min(x2, x3))), 0, w - 1);
         int maxX = Math.Clamp((int)Math.Ceiling(Math.Max(x1, Math.Max(x2, x3))), 0, w - 1);
         int minY = Math.Clamp((int)Math.Floor(Math.Min(y1, Math.Min(y2, y3))), 0, h - 1);
         int maxY = Math.Clamp((int)Math.Ceiling(Math.Max(y1, Math.Max(y2, y3))), 0, h - 1);
 
-        double shapeLeft = deviceBounds.Left;
-        double shapeTop = deviceBounds.Top;
-        double shapeW = deviceBounds.Width;
-        double shapeH = deviceBounds.Height;
+        double shapeLeft = samplingBounds.Left;
+        double shapeTop = samplingBounds.Top;
+        double shapeW = samplingBounds.Width;
+        double shapeH = samplingBounds.Height;
         double invShapeW = shapeW != 0 ? 1.0 / shapeW : invW;
         double invShapeH = shapeH != 0 ? 1.0 / shapeH : invH;
 
@@ -635,17 +728,17 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
 
     private struct RasterEdge { public float X, Dx; public int EndY, Winding; }
 
-    private void DrawStrokePoint(Color32* firstPixel, int w, int h, double x, double y, double radius, double r2, Pen stroke, double invW, double invH, double opacity, Rect deviceBounds)
+    private void DrawStrokePoint(Color32* firstPixel, int w, int h, double x, double y, double radius, double r2, Pen stroke, double invW, double invH, double opacity, Rect samplingBounds)
     {
         int minX = Math.Clamp((int)(x - radius), 0, w - 1);
         int maxX = Math.Clamp((int)(x + radius), 0, w - 1);
         int minY = Math.Clamp((int)(y - radius), 0, h - 1);
         int maxY = Math.Clamp((int)(y + radius), 0, h - 1);
 
-        double shapeLeft = deviceBounds.Left;
-        double shapeTop = deviceBounds.Top;
-        double shapeW = deviceBounds.Width;
-        double shapeH = deviceBounds.Height;
+        double shapeLeft = samplingBounds.Left;
+        double shapeTop = samplingBounds.Top;
+        double shapeW = samplingBounds.Width;
+        double shapeH = samplingBounds.Height;
 
         double invShapeW = shapeW != 0 ? 1.0 / shapeW : invW;
         double invShapeH = shapeH != 0 ? 1.0 / shapeH : invH;
@@ -692,7 +785,7 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
 
     private void DrawStrokeSegment(Color32* firstPixel, int w, int h, double x1, double y1, double x2, double y2,
         double ux, double uy, double vx, double vy, double len, double radius, double r2,
-        Pen stroke, LineCap cap, double invW, double invH, double opacity, Rect deviceBounds)
+        Pen stroke, LineCap cap, double invW, double invH, double opacity, Rect samplingBounds)
     {
         double pad = cap == LineCap.Flat ? 0 : radius;
         int minX = Math.Clamp((int)Math.Floor(Math.Min(x1, x2) - pad - radius), 0, w - 1);
@@ -700,10 +793,10 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
         int minY = Math.Clamp((int)Math.Floor(Math.Min(y1, y2) - pad - radius), 0, h - 1);
         int maxY = Math.Clamp((int)Math.Ceiling(Math.Max(y1, y2) + pad + radius), 0, h - 1);
 
-        double shapeLeft = deviceBounds.Left;
-        double shapeTop = deviceBounds.Top;
-        double shapeW = deviceBounds.Width;
-        double shapeH = deviceBounds.Height;
+        double shapeLeft = samplingBounds.Left;
+        double shapeTop = samplingBounds.Top;
+        double shapeW = samplingBounds.Width;
+        double shapeH = samplingBounds.Height;
 
         double invShapeW = shapeW != 0 ? 1.0 / shapeW : invW;
         double invShapeH = shapeH != 0 ? 1.0 / shapeH : invH;
@@ -751,4 +844,17 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
             _ => along >= 0 && along <= len && Math.Abs(across) <= radius
         };
     }
+
+    private static Rect? NormalizeRectOrNull(Rect rect)
+    {
+        if (!IsFiniteRect(rect))
+            return null;
+
+        return rect.Normalized;
+    }
+
+    private static bool IsFiniteRect(Rect rect)
+        => double.IsFinite(rect.X) && double.IsFinite(rect.Y) && double.IsFinite(rect.Width) && double.IsFinite(rect.Height);
+
+    private readonly record struct InheritedPaintState(IBrush? Fill, Pen Stroke, Rect ScopeBounds);
 }

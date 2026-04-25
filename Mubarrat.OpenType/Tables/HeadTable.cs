@@ -2,24 +2,24 @@
 
 public sealed class HeadTable : IOpenTypeTable
 {
-    public ushort MajorVersion { get; private set; }
-    public ushort MinorVersion { get; private set; }
-    public float FontRevision { get; private set; }
-    public uint ChecksumAdjustment { get; private set; }
-    public uint MagicNumber { get; private set; }
-    public HeadFlags Flags { get; private set; }
-    public ushort UnitsPerEm { get; private set; }
-    public DateTime Created { get; private set; }
-    public DateTime Modified { get; private set; }
-    public short XMin { get; private set; }
-    public short YMin { get; private set; }
-    public short XMax { get; private set; }
-    public short YMax { get; private set; }
-    public MacStyleFlags MacStyle { get; private set; }
-    public ushort LowestRecPPEM { get; private set; }
-    public FontDirectionHintEnum FontDirectionHint { get; private set; }
-    public IndexToLocFormatEnum IndexToLocFormat { get; private set; }
-    public GlyphDataFormatEnum GlyphDataFormat { get; private set; }
+    public ushort MajorVersion { get; set; }
+    public ushort MinorVersion { get; set; }
+    public float FontRevision { get; set; }
+    public uint ChecksumAdjustment { get; set; }
+    public uint MagicNumber { get; set; }
+    public HeadFlags Flags { get; set; }
+    public ushort UnitsPerEm { get; set; }
+    public DateTime Created { get; set; }
+    public DateTime Modified { get; set; }
+    public short XMin { get; set; }
+    public short YMin { get; set; }
+    public short XMax { get; set; }
+    public short YMax { get; set; }
+    public MacStyleFlags MacStyle { get; set; }
+    public ushort LowestRecPPEM { get; set; }
+    public FontDirectionHintEnum FontDirectionHint { get; set; }
+    public IndexToLocFormatEnum IndexToLocFormat { get; set; }
+    public GlyphDataFormatEnum GlyphDataFormat { get; set; }
 
     public string Tag => "head";
 

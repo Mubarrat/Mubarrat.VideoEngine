@@ -10,7 +10,9 @@ public sealed class TextBlock : FrameworkObject
 {
     private Path2D cachedPath;
     private Rect cachedBounds;
-    private bool hasCachedGeometry;
+
+    private int _geometryVersion;
+    private int _cachedGeometryVersion;
 
     public string Text { get => (string?)this[TextProperty] ?? string.Empty; set => this[TextProperty] = value ?? string.Empty; }
     public static readonly Property TextProperty = new(nameof(Text), typeof(string), string.Empty, AffectsMeasure: true, AffectsArrange: true);
@@ -25,12 +27,12 @@ public sealed class TextBlock : FrameworkObject
     public static readonly Property ForegroundProperty = new(nameof(Foreground), typeof(IBrush), new SolidColorBrush(0, 0, 0), AffectsArrange: true);
 
     public bool IsNonZeroFill { get => (bool)this[IsNonZeroFillProperty]; set => this[IsNonZeroFillProperty] = value; }
-    public static readonly Property IsNonZeroFillProperty = new(nameof(IsNonZeroFill), typeof(bool), true, AffectsMeasure: true, AffectsArrange: true);
+    public static readonly Property IsNonZeroFillProperty = new(nameof(IsNonZeroFill), typeof(bool), false, AffectsMeasure: true, AffectsArrange: true);
 
     public override Size OnMeasure(Size availableSize)
     {
         EnsureGeometry();
-        if (!hasCachedGeometry)
+        if (_cachedGeometryVersion != _geometryVersion)
             return Size.Zero;
 
         return new Size(Math.Max(0, cachedBounds.Width), Math.Max(0, cachedBounds.Height));
@@ -40,7 +42,7 @@ public sealed class TextBlock : FrameworkObject
     {
         EnsureGeometry();
 
-        if (!hasCachedGeometry || Foreground is null)
+        if (_cachedGeometryVersion != _geometryVersion || Foreground is null)
         {
             return new GroupDrawing
             {
@@ -56,7 +58,7 @@ public sealed class TextBlock : FrameworkObject
             Path = cachedPath,
             Fill = Foreground,
             Stroke = default,
-            Transform = LayoutTransform * RenderTransform,
+            Transform = Matrix2D.Translate(-cachedBounds.Location) * LayoutTransform * RenderTransform,
             Opacity = Opacity,
             Name = Name
         };
@@ -67,28 +69,39 @@ public sealed class TextBlock : FrameworkObject
         base.OnPropertyChanged(property, oldValue, newValue);
 
         if (property == TextProperty || property == FontFaceProperty || property == FontSizeProperty || property == IsNonZeroFillProperty)
-            hasCachedGeometry = false;
+            _geometryVersion++;
     }
 
     private void EnsureGeometry()
     {
+        if (_cachedGeometryVersion == _geometryVersion) // Check without locking first for better performance in the common case where geometry is up to date
+            return;
+
         lock (this)
         {
-            if (hasCachedGeometry)
+            if (_cachedGeometryVersion == _geometryVersion) // Double-check locking to avoid redundant geometry generation
                 return;
 
-            hasCachedGeometry = false;
             cachedPath = default;
             cachedBounds = Rect.NaN;
 
             if (string.IsNullOrEmpty(Text) || FontFace is null || FontSize <= 0)
+            {
+                _cachedGeometryVersion = _geometryVersion;
                 return;
+            }
 
             var metrics = FontMetrics.Create(FontFace, FontSize);
             var shaping = OpenTypeTextShaper.Shape(Text, metrics);
-            cachedPath = shaping.ToPath2D(metrics.FontSize, new Point(0, metrics.Ascent), IsNonZeroFill);
+
+            cachedPath = shaping.ToPath2D(
+                metrics.FontSize,
+                new Point(0, metrics.Ascent),
+                IsNonZeroFill);
+
             cachedBounds = cachedPath.Bounds.Normalized;
-            hasCachedGeometry = cachedPath.Subpaths.Length > 0;
+
+            _cachedGeometryVersion = _geometryVersion;
         }
     }
 }

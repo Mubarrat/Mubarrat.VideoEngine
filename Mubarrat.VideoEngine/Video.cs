@@ -100,6 +100,9 @@ public class Video
                     }
                     catch (Exception ex)
                     {
+                        if (Debugger.IsAttached)
+                            Debugger.Break();
+
                         exceptions.Add(ex);
                         Log("Renderer", ConsoleColor.Red, $"Failed frame {j + 1}/{TotalFrames}");
                     }
@@ -123,7 +126,7 @@ public class Video
                     producerEvents[j].Wait();
 
                     if (!exceptions.IsEmpty)
-                        throw new AggregateException(exceptions);
+                        throw new AggregateException(exceptions).Flatten();
 
                     encoder.SendFrame(chunkBuffer + j * frameSize);
 

@@ -2,8 +2,6 @@ namespace Mubarrat.VideoEngine.Objects;
 
 public class RelativePanel : Panel
 {
-    private readonly Dictionary<FrameworkObject, Rect> arrangedSlots = [];
-
     public static readonly double Unset = double.NaN;
 
     public static double GetLeft(FrameworkObject element) => (double)element[LeftProperty];
@@ -58,8 +56,6 @@ public class RelativePanel : Panel
 
     public override void OnArrange(Size finalSize, Matrix2D transform)
     {
-        arrangedSlots.Clear();
-
         foreach (var child in ChildrenIterator)
         {
             var desired = child.DesiredSize;
@@ -94,20 +90,7 @@ public class RelativePanel : Panel
             if (GetCenterVertical(child) && !double.IsFinite(top) && !double.IsFinite(bottom))
                 y = (finalSize.Height - height) * 0.5;
 
-            arrangedSlots[child] = new Rect(x, y, Math.Max(0, width), Math.Max(0, height));
+            child.Arrange(new(width, height), Matrix2D.Translate(x, y));
         }
     }
-
-    protected override Matrix2D GetChildTransform(FrameworkObject child, Size availableSize, Matrix2D parentTransform)
-    {
-        if (!arrangedSlots.TryGetValue(child, out var slot))
-            return parentTransform;
-
-        return parentTransform * Matrix2D.Translate(slot.X, slot.Y);
-    }
-
-    protected override Size GetChildArrangeSize(FrameworkObject child, Size availableSize)
-        => arrangedSlots.TryGetValue(child, out var slot)
-            ? slot.Size
-            : child.DesiredSize;
 }

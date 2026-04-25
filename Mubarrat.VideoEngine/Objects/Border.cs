@@ -37,13 +37,13 @@ public class Border : FrameworkObject
 
     public static readonly Property CornerRadiusProperty = new(nameof(CornerRadius), typeof(double), 0d, AffectsMeasure: true, AffectsArrange: true);
 
-    public double Padding
+    public Thickness Padding
     {
-        get => (double)this[PaddingProperty];
-        set => this[PaddingProperty] = Math.Max(0, value);
+        get => (Thickness)this[PaddingProperty];
+        set => this[PaddingProperty] = value;
     }
 
-    public static readonly Property PaddingProperty = new(nameof(Padding), typeof(double), 0d, AffectsMeasure: true, AffectsArrange: true);
+    public static readonly Property PaddingProperty = new(nameof(Padding), typeof(Thickness), new Thickness(0), AffectsMeasure: true, AffectsArrange: true);
 
     protected override IEnumerable<FrameworkObject> ChildrenIterator => Child is null ? [] : [Child];
 
@@ -63,38 +63,15 @@ public class Border : FrameworkObject
 
     public override Size OnMeasure(Size availableSize)
     {
-        double inset = GetContentInset();
-        var child = Child;
-
-        if (child is null)
-            return new Size(inset * 2, inset * 2);
-
-        return new Size(
-            child.DesiredSize.Width + inset * 2,
-            child.DesiredSize.Height + inset * 2);
+        Size insetSize = new(HorizontalContentInset * 2, VerticalContentInset * 2);
+        return Child is not FrameworkObject child ? insetSize : child.DesiredSize + insetSize;
     }
 
-    protected override Size GetChildMeasureConstraint(FrameworkObject child, Size availableSize)
-    {
-        double inset = GetContentInset() * 2;
-        return new Size(
-            Math.Max(0, availableSize.Width - inset),
-            Math.Max(0, availableSize.Height - inset));
-    }
+    protected override Size GetChildMeasureConstraint(FrameworkObject child, Size availableSize) => Size.Max(Size.Zero, availableSize - new Size(HorizontalContentInset * 2, VerticalContentInset * 2));
 
-    protected override Matrix2D GetChildTransform(FrameworkObject child, Size availableSize, Matrix2D parentTransform)
-    {
-        double inset = GetContentInset();
-        return parentTransform * Matrix2D.Translate(inset, inset);
-    }
+    protected override Matrix2D GetChildTransform(FrameworkObject child, Size availableSize) => Matrix2D.Translate(HorizontalContentInset, VerticalContentInset);
 
-    protected override Size GetChildArrangeSize(FrameworkObject child, Size availableSize)
-    {
-        double inset = GetContentInset() * 2;
-        return new Size(
-            Math.Max(0, availableSize.Width - inset),
-            Math.Max(0, availableSize.Height - inset));
-    }
+    protected override Size GetChildArrangeSize(FrameworkObject child, Size availableSize) => Size.Max(Size.Zero, availableSize - new Size(HorizontalContentInset * 2, VerticalContentInset * 2));
 
     public override Drawing ToDrawing()
     {
@@ -142,9 +119,8 @@ public class Border : FrameworkObject
     }
 
     private static PathBuilder BuildRectPath(Rect rect, double radius)
-        => radius > 0
-            ? PathBuilder.RoundedRectangle(rect, radius)
-            : PathBuilder.Rectangle(rect);
+        => radius > 0 ? PathBuilder.RoundedRectangle(rect, radius) : PathBuilder.Rectangle(rect);
 
-    private double GetContentInset() => Math.Max(0, BorderPen.Thickness) + Padding;
+    private double HorizontalContentInset => Math.Max(0, BorderPen.Thickness) + Padding.Horizontal;
+    private double VerticalContentInset => Math.Max(0, BorderPen.Thickness) + Padding.Vertical;
 }

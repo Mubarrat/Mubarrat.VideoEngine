@@ -9,8 +9,7 @@ public readonly record struct FontMetrics(
     double LineHeight,
     double Ascent,
     double Descent,
-    double LineGap
-)
+    double LineGap)
 {
     public static FontMetrics Create(FontFace face, double fontSize)
     {
@@ -39,4 +38,10 @@ public readonly record struct FontMetrics(
             LineGap: lineGap
         );
     }
+
+    public double GetAdvanceWidth(ushort glyphId) => Face.Tables.TryGet(out HmtxTable hmtx) ? hmtx.GetAdvanceWidth(glyphId) * Scale : double.NaN;
+
+    public double GetAdvanceHeight(ushort glyphId) => Face.Tables.TryGet(out VmtxTable vmtx) ? vmtx.GetGlyphMetrics(glyphId).AdvanceHeight * Scale : double.NaN;
+
+    public (double, double) GetAdvanceWidthAndHeight(ushort glyphId) => (GetAdvanceWidth(glyphId), GetAdvanceHeight(glyphId));
 }

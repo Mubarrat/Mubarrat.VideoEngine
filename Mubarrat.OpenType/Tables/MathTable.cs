@@ -6,18 +6,21 @@ public sealed class MathTable : IOpenTypeTable
 {
     public string Tag => "MATH";
 
-    public ushort MajorVersion { get; private set; }
-    public ushort MinorVersion { get; private set; }
+    public ushort MajorVersion { get; set; }
+    public ushort MinorVersion { get; set; }
 
-    public MathConstantsData MathConstants { get; private set; }
-    public MathGlyphInfoData MathGlyphInfo { get; private set; }
-    public MathVariantsData MathVariants { get; private set; }
+    public MathConstantsData MathConstants { get; set; }
+    public MathGlyphInfoData MathGlyphInfo { get; set; }
+    public MathVariantsData MathVariants { get; set; }
 
     public readonly record struct MathValueRecord(short Value, DeviceOrVariationIndexTable? DeviceTable) : IOpenTypeCommonTable<MathValueRecord>
     {
         public static MathValueRecord Parse(OpenTypeReader.TableScope scope, object? param = null) => new(
             Value: scope.Reader.ReadInt16(),
             DeviceTable: scope.ParseCommonTableOrDefault<DeviceOrVariationIndexTable>(scope.Reader.ReadOffset16()));
+
+        public static implicit operator MathValueRecord(short value) => new(value, null);
+        public static double operator *(MathValueRecord record, double scale) => record.Value * scale;
     }
 
     public readonly record struct MathConstantsData(

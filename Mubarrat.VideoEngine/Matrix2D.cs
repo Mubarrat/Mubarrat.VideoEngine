@@ -46,6 +46,7 @@ public struct Matrix2D : IEquatable<Matrix2D>, ILerpable<Matrix2D>
     }
 
     public static Matrix2D Translate(double x, double y) => new(1, 0, 0, 1, x, y);
+    public static Matrix2D Translate(Point offset) => new(1, 0, 0, 1, offset.X, offset.Y);
 
     public static Matrix2D Scale(double sx, double sy) => new(sx, 0, 0, sy, 0, 0);
 

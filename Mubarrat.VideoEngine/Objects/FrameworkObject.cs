@@ -1,5 +1,4 @@
 ﻿using Mubarrat.VideoEngine.Draw;
-using Mubarrat.VideoEngine.Path;
 
 namespace Mubarrat.VideoEngine.Objects;
 
@@ -19,6 +18,15 @@ public abstract class FrameworkObject : BaseObject, ILerpable<FrameworkObject>
 
     public double Opacity { get => (double)this[OpacityProperty]; set => this[OpacityProperty] = value; }
     public static readonly Property OpacityProperty = new(nameof(Opacity), typeof(double), 1.0);
+
+    public HorizontalAlignment HorizontalAlignment { get => (HorizontalAlignment)this[HorizontalAlignmentProperty]; set => this[HorizontalAlignmentProperty] = value; }
+    public static readonly Property HorizontalAlignmentProperty = new(nameof(HorizontalAlignment), typeof(HorizontalAlignment), HorizontalAlignment.Stretch, AffectsParentArrange: true);
+
+    public VerticalAlignment VerticalAlignment { get => (VerticalAlignment)this[VerticalAlignmentProperty]; set => this[VerticalAlignmentProperty] = value; }
+    public static readonly Property VerticalAlignmentProperty = new(nameof(VerticalAlignment), typeof(VerticalAlignment), VerticalAlignment.Stretch, AffectsParentArrange: true);
+
+    public Thickness Margin { get => (Thickness)this[MarginProperty]; set => this[MarginProperty] = value; }
+    public static readonly Property MarginProperty = new(nameof(Margin), typeof(Thickness), default(Thickness), AffectsParentMeasure: true, AffectsParentArrange: true);
 
     public string Name { get => (string)this[NameProperty]; set => this[NameProperty] = value; }
     public static readonly Property NameProperty = new(nameof(Name), typeof(string));
@@ -89,7 +97,10 @@ public abstract class FrameworkObject : BaseObject, ILerpable<FrameworkObject>
 
         foreach (var child in ChildrenIterator)
         {
-            child.MeasureSubtree(GetChildMeasureConstraint(child, availableSize));
+            var childConstraint = GetChildMeasureConstraint(child, availableSize);
+            var margin = child.Margin.ClampNonNegative();
+            childConstraint = Size.Max(Size.Zero, childConstraint - new Size(margin.Horizontal, margin.Vertical));
+            child.MeasureSubtree(childConstraint);
         }
 
         Measure(availableSize);
@@ -106,11 +117,56 @@ public abstract class FrameworkObject : BaseObject, ILerpable<FrameworkObject>
 
         foreach (var child in ChildrenIterator)
         {
-            var childTransform = GetChildTransform(child, availableSize, parentTransform);
+            var childTransform = GetChildTransform(child, availableSize);
             var childSize = GetChildArrangeSize(child, availableSize);
+
+            var margin = child.Margin.ClampNonNegative();
+            childTransform *= Matrix2D.Translate(margin.Left, margin.Top);
+            childSize = new Size(
+                Math.Max(0, childSize.Width - margin.Horizontal),
+                Math.Max(0, childSize.Height - margin.Vertical));
+
+            (childTransform, childSize) = ApplyChildAlignment(child, childTransform, childSize);
 
             child.ArrangeSubtree(childSize, childTransform);
         }
+    }
+
+    private static (Matrix2D Transform, Size Size) ApplyChildAlignment(FrameworkObject child, Matrix2D childTransform, Size slotSize)
+    {
+        double slotWidth = Math.Max(0, slotSize.Width);
+        double slotHeight = Math.Max(0, slotSize.Height);
+
+        var desired = child.DesiredSize;
+        double desiredWidth = double.IsFinite(desired.Width) ? Math.Max(0, desired.Width) : 0;
+        double desiredHeight = double.IsFinite(desired.Height) ? Math.Max(0, desired.Height) : 0;
+
+        double arrangedWidth = child.HorizontalAlignment == HorizontalAlignment.Stretch
+            ? slotWidth
+            : Math.Min(slotWidth, desiredWidth);
+
+        double arrangedHeight = child.VerticalAlignment == VerticalAlignment.Stretch
+            ? slotHeight
+            : Math.Min(slotHeight, desiredHeight);
+
+        double dx = child.HorizontalAlignment switch
+        {
+            HorizontalAlignment.Center => (slotWidth - arrangedWidth) * 0.5,
+            HorizontalAlignment.Right => slotWidth - arrangedWidth,
+            _ => 0
+        };
+
+        double dy = child.VerticalAlignment switch
+        {
+            VerticalAlignment.Middle => (slotHeight - arrangedHeight) * 0.5,
+            VerticalAlignment.Bottom => slotHeight - arrangedHeight,
+            _ => 0
+        };
+
+        if (dx != 0 || dy != 0)
+            childTransform *= Matrix2D.Translate(dx, dy);
+
+        return (childTransform, new Size(arrangedWidth, arrangedHeight));
     }
 
     public void Measure(Size availableSize)
@@ -150,9 +206,9 @@ public abstract class FrameworkObject : BaseObject, ILerpable<FrameworkObject>
 
     protected virtual Size GetChildMeasureConstraint(FrameworkObject child, Size availableSize) => availableSize;
 
-    protected virtual Matrix2D GetChildTransform(FrameworkObject child, Size availableSize, Matrix2D parentTransform) => parentTransform * Matrix2D.Translate(0, 0);
+    protected virtual Matrix2D GetChildTransform(FrameworkObject child, Size availableSize) => child.LayoutTransform;
 
-    protected virtual Size GetChildArrangeSize(FrameworkObject child, Size availableSize) => child.DesiredSize;
+    protected virtual Size GetChildArrangeSize(FrameworkObject child, Size availableSize) => child.ActualBounds.Size;
 
     public void UpdateLayout(Size availableSize, Matrix2D transform)
     {

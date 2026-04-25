@@ -63,9 +63,22 @@ public static partial class OpenTypeTextShaper
             var infos = buffer.GetGlyphInfoSpan();
             var positions = buffer.GetGlyphPositionSpan();
 
+            double minX = 0;
+            double maxX = 0;
+
+            double cursorX = 0;
+
             for (int i = 0; i < infos.Length; i++)
             {
                 double xAdvance = positions[i].XAdvance * metrics.Scale;
+
+                double x = cursorX + positions[i].XOffset * metrics.Scale;
+
+                double left = x;
+                double right = x + xAdvance;
+
+                minX = Math.Min(minX, left);
+                maxX = Math.Max(maxX, right);
 
                 shaped.Add(new ShapedGlyph(
                     Face: metrics.Face,
@@ -77,8 +90,10 @@ public static partial class OpenTypeTextShaper
                     XOffset: positions[i].XOffset * metrics.Scale,
                     YOffset: positions[i].YOffset * metrics.Scale));
 
-                width += xAdvance;
+                cursorX += xAdvance;
             }
+
+            width = maxX - minX;
         }
 
         bool singleRun = runs.Count == 1;

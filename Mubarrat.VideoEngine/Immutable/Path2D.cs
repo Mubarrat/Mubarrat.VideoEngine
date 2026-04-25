@@ -16,7 +16,7 @@ public struct Path2D(bool IsNonZeroFill, params Subpath[] subpaths) : ILerpable<
 
         bool fill = t < 0.5 ? IsNonZeroFill : target.IsNonZeroFill;
         
-        switch (Subpaths.Length, target.Subpaths.Length)
+        switch (Subpaths?.Length ?? 0, target.Subpaths?.Length ?? 0)
         {
             case (0, 0): return new Path2D(fill);
             case (0, _): return new Path2D(fill, new Subpath([])).Lerp(target, t);
@@ -76,5 +76,22 @@ public struct Path2D(bool IsNonZeroFill, params Subpath[] subpaths) : ILerpable<
         get => Subpaths.Select(sp => sp.CenterPoint).ToArray().Average();
     }
 
-    public readonly Rect Bounds => Subpaths.Length == 0 ? Rect.NaN : Subpaths.Select(x => x.Bounds).Aggregate((a, b) => a.Union(b));
+    public readonly Rect Bounds => Subpaths is { Length: not 0 } ? Subpaths.Select(x => x.Bounds).Aggregate((a, b) => a.Union(b)) : Rect.NaN;
+
+    public static Path2D operator *(Path2D path, Matrix2D matrix) => new(path.IsNonZeroFill, Array.ConvertAll(path.Subpaths, sp => sp * matrix));
+    public static Path2D operator /(Path2D path, Matrix2D matrix) => new(path.IsNonZeroFill, Array.ConvertAll(path.Subpaths, sp => sp / matrix));
+    public void operator *=(Matrix2D matrix)
+    {
+        for (int i = 0; i < Subpaths.Length; i++)
+            Subpaths[i] *= matrix;
+    }
+    public void operator /=(Matrix2D matrix)
+    {
+        for (int i = 0; i < Subpaths.Length; i++)
+            Subpaths[i] /= matrix;
+    }
+
+    public static Path2D Combine(Path2D[] paths) => paths.Length == 0
+        ? new()
+        : new(paths.Sum(x => x.IsNonZeroFill ? 1 : 0) * 2 < paths.Length, [.. paths.SelectMany(p => p.Subpaths)]);
 }
