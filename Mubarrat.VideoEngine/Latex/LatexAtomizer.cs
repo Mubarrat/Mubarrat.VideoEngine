@@ -130,7 +130,7 @@ public sealed class LatexAtomizer
         {
             MathAtom numerator = ToMathAtom(command.RequiredArguments[0].Body);
             MathAtom denominator = ToMathAtom(command.RequiredArguments[1].Body);
-            return new BinomialMathAtom(numerator, denominator);
+            return new StackMathAtom(numerator, denominator);
         }
 
         if (string.Equals(command.Name, "overset", StringComparison.Ordinal) && command.RequiredArguments.Count >= 2)

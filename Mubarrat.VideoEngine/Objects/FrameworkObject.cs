@@ -40,7 +40,8 @@ public abstract class FrameworkObject : BaseObject, ILerpable<FrameworkObject>
 
     protected virtual IEnumerable<FrameworkObject> ChildrenIterator => [];
 
-    protected override object GetDefaultValue(Property property) => property == ParentProperty ? null! : (Parent?[property] ?? base.GetDefaultValue(property));
+    protected override object GetDefaultValue(Property property) =>
+        property == ParentProperty ? null! : property.IsInherited ? (Parent?[property] ?? base.GetDefaultValue(property)) : base.GetDefaultValue(property);
 
     protected override void OnPropertyChanged(Property property, object? oldValue, object? newValue)
     {

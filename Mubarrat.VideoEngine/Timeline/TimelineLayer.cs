@@ -35,42 +35,76 @@ public class TimelineLayer
 
     private static void UpdateRootFrameworkObjectLayout(FrameworkObject frameworkObject, Size availableSize)
     {
-        frameworkObject.MeasureSubtree(availableSize);
+        var margin = frameworkObject.Margin;
 
-        double availableWidth = Math.Max(0, availableSize.Width);
-        double availableHeight = Math.Max(0, availableSize.Height);
+        // -----------------------------
+        // 1. AVAILABLE SPACE (content sees reduced space)
+        // -----------------------------
+        var innerAvailableSize = new Size(
+            Math.Max(0, availableSize.Width - margin.Horizontal),
+            Math.Max(0, availableSize.Height - margin.Vertical)
+        );
 
-        double desiredWidth = double.IsFinite(frameworkObject.DesiredSize.Width)
+        frameworkObject.MeasureSubtree(innerAvailableSize);
+
+        // -----------------------------
+        // 2. CONTENT SIZE ONLY
+        // -----------------------------
+        var contentWidth = double.IsFinite(frameworkObject.DesiredSize.Width)
             ? Math.Max(0, frameworkObject.DesiredSize.Width)
             : 0;
 
-        double desiredHeight = double.IsFinite(frameworkObject.DesiredSize.Height)
+        var contentHeight = double.IsFinite(frameworkObject.DesiredSize.Height)
             ? Math.Max(0, frameworkObject.DesiredSize.Height)
             : 0;
 
-        double arrangedWidth = frameworkObject.HorizontalAlignment == HorizontalAlignment.Stretch
+        // -----------------------------
+        // 3. FINAL OUTER SIZE (for alignment ONLY)
+        // -----------------------------
+        var outerWidth = contentWidth + margin.Horizontal;
+        var outerHeight = contentHeight + margin.Vertical;
+
+        var availableWidth = Math.Max(0, availableSize.Width);
+        var availableHeight = Math.Max(0, availableSize.Height);
+
+        var arrangedOuterWidth = frameworkObject.HorizontalAlignment == HorizontalAlignment.Stretch
             ? availableWidth
-            : Math.Min(availableWidth, desiredWidth);
+            : Math.Min(availableWidth, outerWidth);
 
-        double arrangedHeight = frameworkObject.VerticalAlignment == VerticalAlignment.Stretch
+        var arrangedOuterHeight = frameworkObject.VerticalAlignment == VerticalAlignment.Stretch
             ? availableHeight
-            : Math.Min(availableHeight, desiredHeight);
+            : Math.Min(availableHeight, outerHeight);
 
-        double dx = frameworkObject.HorizontalAlignment switch
+        // -----------------------------
+        // 4. ALIGNMENT (based on OUTER box)
+        // -----------------------------
+        var dx = frameworkObject.HorizontalAlignment switch
         {
-            HorizontalAlignment.Center => (availableWidth - arrangedWidth) * 0.5,
-            HorizontalAlignment.Right => availableWidth - arrangedWidth,
+            HorizontalAlignment.Center => (availableWidth - arrangedOuterWidth) * 0.5,
+            HorizontalAlignment.Right => availableWidth - arrangedOuterWidth,
             _ => 0
         };
 
-        double dy = frameworkObject.VerticalAlignment switch
+        var dy = frameworkObject.VerticalAlignment switch
         {
-            VerticalAlignment.Middle => (availableHeight - arrangedHeight) * 0.5,
-            VerticalAlignment.Bottom => availableHeight - arrangedHeight,
+            VerticalAlignment.Middle => (availableHeight - arrangedOuterHeight) * 0.5,
+            VerticalAlignment.Bottom => availableHeight - arrangedOuterHeight,
             _ => 0
         };
 
-        frameworkObject.ArrangeSubtree(new Size(arrangedWidth, arrangedHeight), Matrix2D.Translate(dx, dy));
+        // -----------------------------
+        // 5. APPLY MARGIN OFFSET
+        // -----------------------------
+        dx += margin.Left;
+        dy += margin.Top;
+
+        // -----------------------------
+        // 6. ARRANGE CONTENT ONLY
+        // -----------------------------
+        frameworkObject.ArrangeSubtree(
+            frameworkObject.DesiredSize, // IMPORTANT: no margin subtraction
+            Matrix2D.Translate(dx, dy)
+        );
     }
 
     public TimelineLayer To(double second, Drawing drawing)

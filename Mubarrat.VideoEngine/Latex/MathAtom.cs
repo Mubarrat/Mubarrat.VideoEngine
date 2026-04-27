@@ -23,6 +23,9 @@ public abstract class MathAtom(MathAtomType type = MathAtomType.Ordinary)
 
     protected virtual IEnumerable<MathAtom> ChildrenIterator => [];
 
+    public IEnumerable<MathAtom> Descandants => ChildrenIterator.SelectMany(child => child.SelfAndDescandants);
+    public IEnumerable<MathAtom> SelfAndDescandants => Descandants.Prepend(this);
+
     public bool IsExtendedShape => this is not SymbolMathAtom symbol
         || string.IsNullOrEmpty(symbol.Text)
         || (MathTable.MathGlyphInfo.ExtendedShapeCoverage is { } coverage
@@ -77,6 +80,6 @@ public abstract class MathAtom(MathAtomType type = MathAtomType.Ordinary)
         _ => 1
     };
 
-    public double GetRelativeChildFactor(MathStyle style) => (style is MathStyle.Display or MathStyle.Text && Style is MathStyle.Display or MathStyle.Text)
+    public double GetRelativeChildFactor(MathStyle style) => (style is MathStyle.Display or MathStyle.Text && Style is MathStyle.Display or MathStyle.Text) || style == Style
         ? 1 : (GetFactor(style) / GetFactor(Style)); // reduces checks
 }

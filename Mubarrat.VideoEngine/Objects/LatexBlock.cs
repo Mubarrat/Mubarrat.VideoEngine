@@ -93,6 +93,7 @@ public sealed class LatexBlock : FrameworkObject
 
             MathAtom atom = LatexAtomizer.Atomize(Latex);
             atom.Metrics = FontMetrics.Create(FontFace, FontSize);
+            atom.Style = MathStyle.Display;
             atom.PropertyDown();
             atom.LayoutDown();
 

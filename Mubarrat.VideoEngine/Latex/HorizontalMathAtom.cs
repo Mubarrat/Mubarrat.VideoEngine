@@ -24,15 +24,26 @@ public sealed class HorizontalMathAtom(IReadOnlyList<MathAtom> children) : MathA
             maxAscent = Math.Max(maxAscent, child.Baseline);
             maxDescent = Math.Max(maxDescent, child.Size.Height - child.Baseline);
         }
-        for (int i = 0; i < Children.Count; i++)
+        if (Style is MathStyle.Display or MathStyle.Text)
         {
-            MathAtom? child = Children[i];
-            child.Location = new(x + (i == 0
-                ? 0
-                : MathSpacingEngine.GetAbsoluteSpacing(
-                    MathSpacingEngine.GetSpacing(Children[i - 1].Type, child.Type, i == 1),
-                        Metrics ?? throw new InvalidOperationException("Metrics must be set for HorizontalMathAtom"))), maxAscent - child.Baseline);
-            x = child.Bounds.Right;
+            for (int i = 0; i < Children.Count; i++)
+            {
+                MathAtom? child = Children[i];
+                child.Location = new(x + (i == 0
+                    ? 0
+                    : MathSpacingEngine.GetAbsoluteSpacing(
+                        MathSpacingEngine.GetSpacing(Children[i - 1].Type, child.Type, i == 1),
+                            Metrics ?? throw new InvalidOperationException("Metrics must be set for HorizontalMathAtom"))), maxAscent - child.Baseline);
+                x = child.Bounds.Right;
+            }
+        }
+        else
+        {
+            foreach (var child in Children)
+            {
+                child.Location = new(x, maxAscent - child.Baseline);
+                x += child.Size.Width;
+            }
         }
         Size = new(x, maxAscent + maxDescent);
         Baseline = maxAscent;

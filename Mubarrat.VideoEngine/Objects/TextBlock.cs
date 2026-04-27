@@ -35,7 +35,7 @@ public sealed class TextBlock : FrameworkObject
         if (_cachedGeometryVersion != _geometryVersion)
             return Size.Zero;
 
-        return new Size(Math.Max(0, cachedBounds.Width), Math.Max(0, cachedBounds.Height));
+        return new Size(Math.Max(0, cachedBounds.Right), Math.Max(0, cachedBounds.Bottom));
     }
 
     public override Drawing ToDrawing()
@@ -58,7 +58,7 @@ public sealed class TextBlock : FrameworkObject
             Path = cachedPath,
             Fill = Foreground,
             Stroke = default,
-            Transform = Matrix2D.Translate(-cachedBounds.Location) * LayoutTransform * RenderTransform,
+            Transform = LayoutTransform * RenderTransform,
             Opacity = Opacity,
             Name = Name
         };

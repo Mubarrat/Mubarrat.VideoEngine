@@ -3,7 +3,7 @@ using Mubarrat.OpenType.TextShaping;
 
 namespace Mubarrat.VideoEngine.Latex;
 
-public sealed class ScriptsMathAtom(MathAtom @base, MathAtom? subscript, MathAtom? superscript) : MathAtom(@base?.Type ?? MathAtomType.Ordinary)
+public class ScriptsMathAtom(MathAtom @base, MathAtom? subscript, MathAtom? superscript) : MathAtom(@base?.Type ?? MathAtomType.Ordinary)
 {
     public MathAtom Base = @base ?? new SymbolMathAtom();
     public MathAtom? Subscript = subscript;

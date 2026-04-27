@@ -132,4 +132,12 @@ public struct Color32 : ILerpable<Color32>, IEquatable<Color32>
     public static bool operator !=(Color32 left, Color32 right) => left.Value != right.Value;
 
     public override readonly int GetHashCode() => Value.GetHashCode();
+
+    public static implicit operator Color32(Vector4 vector) => new(
+        (byte)vector.X,
+        (byte)vector.Y,
+        (byte)vector.Z,
+        (byte)vector.W);
+
+    public static implicit operator Vector4(Color32 color) => new(color.R, color.G, color.B, color.A);
 }

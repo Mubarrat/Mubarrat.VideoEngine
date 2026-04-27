@@ -1,4 +1,5 @@
 using Mubarrat.VideoEngine.Immutable;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
@@ -228,10 +229,11 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
 
                 Color32* row = firstPixel + y * w;
 
-                DrawFillSample(path.IsNonZeroFill, fill, edges, active, sorted, activeCount, row, y, shapeLeft, shapeTop,
-                    invShapeW, invShapeH, opacity, w, -0.25f, FillSubsampleWeight);
-                DrawFillSample(path.IsNonZeroFill, fill, edges, active, sorted, activeCount, row, y, shapeLeft, shapeTop,
-                    invShapeW, invShapeH, opacity, w, 0.25f, FillSubsampleWeight);
+                DrawFillScanlineAccum(path.IsNonZeroFill, fill, edges, active, sorted, activeCount,
+                    row, y,
+                    shapeLeft, shapeTop,
+                    invShapeW, invShapeH,
+                    opacity, w);
 
                 // Advance edges
                 for (int i = 0; i < activeCount; i++)
@@ -245,6 +247,158 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
             NativeMemory.Free(bucketHeads);
             NativeMemory.Free(active);
             NativeMemory.Free(sorted);
+        }
+    }
+
+    private void DrawFillScanlineAccum(
+    bool isNonZeroFill,
+    IBrush fill,
+    RasterEdge* edges,
+    int* active,
+    int* sorted,
+    int activeCount,
+    Color32* row,
+    int y,
+    double shapeLeft,
+    double shapeTop,
+    double invShapeW,
+    double invShapeH,
+    float opacity,
+    int width)
+    {
+        // 4x MSAA (2x2 grid)
+        const int SAMPLE_COUNT = 4;
+
+        Span<float> offsetsX = stackalloc float[] { 0.25f, 0.75f, 0.25f, 0.75f };
+        Span<float> offsetsY = stackalloc float[] { 0.25f, 0.25f, 0.75f, 0.75f };
+
+        // Per-pixel accumulators
+        Span<float> accumA = stackalloc float[width];
+        Span<Vector4> accumC = stackalloc Vector4[width];
+
+        for (int s = 0; s < SAMPLE_COUNT; s++)
+        {
+            float dx = offsetsX[s] - 0.5f;
+            float dy = offsetsY[s] - 0.5f;
+
+            SortActiveEdges(edges, active, sorted, activeCount, dy);
+
+            double sampleY = y + 0.5 + dy;
+            double sy = Math.Clamp((sampleY - shapeTop) * invShapeH, 0.0, 1.0);
+
+            int fillState = 0;
+            bool inside = false;
+            double spanStart = 0;
+
+            for (int i = 0; i < activeCount;)
+            {
+                int edgeIndex = sorted[i];
+                double x = edges[edgeIndex].X + edges[edgeIndex].Dx * dy;
+
+                int delta = 0;
+                int crossings = 0;
+
+                int j = i;
+                while (j < activeCount)
+                {
+                    int ei = sorted[j];
+                    double gx = edges[ei].X + edges[ei].Dx * dy;
+
+                    if (Math.Abs(gx - x) > FillIntersectionMergeEpsilon)
+                        break;
+
+                    if (isNonZeroFill)
+                        delta += edges[ei].Winding;
+                    else
+                        crossings++;
+
+                    j++;
+                }
+
+                bool wasInside = inside;
+
+                if (isNonZeroFill)
+                {
+                    fillState += delta;
+                    inside = fillState != 0;
+                }
+                else
+                {
+                    fillState += crossings;
+                    inside = (fillState & 1) != 0;
+                }
+
+                if (!wasInside && inside)
+                {
+                    spanStart = x;
+                }
+                else if (wasInside && !inside)
+                {
+                    AccumulateSpan(
+                        fill,
+                        accumA,
+                        accumC,
+                        width,
+                        shapeLeft,
+                        invShapeW,
+                        sy,
+                        dx,
+                        spanStart,
+                        x);
+                }
+
+                i = j;
+            }
+        }
+
+        // 🔥 Final resolve (ONE blend per pixel)
+        float weight = 1f / SAMPLE_COUNT;
+
+        for (int x = 0; x < width; x++)
+        {
+            float a = accumA[x] * weight;
+            if (a <= 0) continue;
+
+            a *= opacity;
+            if (a <= 0) continue;
+
+            var c = accumC[x] * weight * opacity;
+
+            Color32.BlendPremultiplied(c, ref row[x]);
+        }
+    }
+
+    private static void AccumulateSpan(
+    IBrush fill,
+    Span<float> accumA,
+    Span<Vector4> accumC,
+    int width,
+    double shapeLeft,
+    double invShapeW,
+    double sy,
+    double dx,
+    double xStart,
+    double xEnd)
+    {
+        if (xEnd <= xStart) return;
+
+        int x0 = Math.Max(0, (int)Math.Floor(xStart));
+        int x1 = Math.Min(width - 1, (int)Math.Ceiling(xEnd) - 1);
+        if (x0 > x1) return;
+
+        for (int x = x0; x <= x1; x++)
+        {
+            double coverage = Math.Min(xEnd, x + 1.0) - Math.Max(xStart, x);
+            if (coverage <= 0) continue;
+
+            double sx = Math.Clamp((x + 0.5 + dx - shapeLeft) * invShapeW, 0.0, 1.0);
+
+            var color = fill.Sample(sx, sy).ToPremultiplied;
+
+            float cov = (float)coverage;
+
+            accumA[x] += cov;
+            accumC[x] += (Vector4)color * cov;
         }
     }
 
