@@ -23,11 +23,22 @@ public class Video
 
     public EncoderConstructor EncoderConstructor { get; set; }
 
+    public uint MaxDegreeOfParallelFrames { get; set => field = Math.Max(1, value); } = 1;
+
     public Video()
     {
         // Detect best available encoder.
         EncoderConstructor ??= EncoderFactory.CreateBestEncoder();
         // Only QSV is implemented for now, but we can add more encoders in the future and choose based on system capabilities.
+
+        if (!Debugger.IsAttached)
+        {
+            // Choosing Environment.ProcessorCount to match environment.
+            // Over number means cpu has to decide which thread should it run and it can add overhead.
+            // Under number means not efficiently using full cpu to render all frames.
+            // For debugger, we should use only 1 thread because it becomes very hard to debug if there's multiple thread.
+            MaxDegreeOfParallelFrames = (uint)Environment.ProcessorCount;
+        }
     }
 
     public void Export(Stream outputStream)
@@ -47,11 +58,7 @@ public class Video
 
         uint frameSize = (uint)Width * Height * 4;
 
-        // Choosing Environment.ProcessorCount to match environment.
-        // Over number means cpu has to decide which thread should it run and it can add overhead.
-        // Under number means not efficiently using full cpu to render all frames.
-        // For debugger, we should use only 1 thread because it becomes very hard to debug if there's multiple thread.
-        uint framesPerChunk = Debugger.IsAttached ? 1u : (uint)Environment.ProcessorCount; // Leave 1 core because it's main thread
+        uint framesPerChunk = MaxDegreeOfParallelFrames;
 
         // Allocate a large buffer for a chunk of frames. Each frame is Width * Height * 4 bytes (BGRA).
         // Using a single large buffer for the chunk reduces overhead compared to allocating separate buffers for each frame.
