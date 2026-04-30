@@ -23,7 +23,7 @@ public sealed class PathDrawing : Drawing
             return new PathDrawing
             {
                 Path = Path.Lerp(pathDrawing.Path, t),
-                Fill = Fill.Lerp(pathDrawing.Fill, t),
+                Fill = Fill?.Lerp(pathDrawing.Fill, t) ?? pathDrawing.Fill?.Lerp(IBrush.Transparent, 1 - t) ?? null,
                 Stroke = Stroke.Lerp(pathDrawing.Stroke, t),
                 Transform = Transform.Lerp(pathDrawing.Transform, t),
                 Opacity = Opacity.Lerp(pathDrawing.Opacity, t),

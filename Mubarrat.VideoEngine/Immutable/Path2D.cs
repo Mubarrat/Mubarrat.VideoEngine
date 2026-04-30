@@ -23,7 +23,7 @@ public struct Path2D(bool IsNonZeroFill, params Subpath[] subpaths) : ILerpable<
             case (_, 0): return Lerp(new Path2D(fill, new Subpath([])), t);
         }
 
-        int n = Math.Max(Subpaths.Length, target.Subpaths.Length);
+        int n = Math.Max(Subpaths!.Length, target.Subpaths!.Length);
 
         var a = (Subpath[])Subpaths.Clone();
         var b = (Subpath[])target.Subpaths.Clone();

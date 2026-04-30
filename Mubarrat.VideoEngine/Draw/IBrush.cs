@@ -7,4 +7,6 @@ public interface IBrush : ILerpable<IBrush>
     Color32 Sample(double x, double y);
 
     IBrush ILerpable<IBrush>.Lerp(in IBrush other, double t) => new LerpBrush(this, other, t);
+
+    public static readonly IBrush Transparent = new SolidColorBrush();
 }

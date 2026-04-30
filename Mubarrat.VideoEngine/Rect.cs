@@ -16,6 +16,7 @@ public record struct Rect(
     public static Rect Empty => new(0);
     public static Rect Universal => new(Point.Minimum, Size.Maximum);
     public static Rect NaN => new(double.NaN);
+    public readonly bool IsNaN => double.IsNaN(X) || double.IsNaN(Y) || double.IsNaN(Width) || double.IsNaN(Height);
 
     [field: FieldOffset(0)] public Point Location;
     [field: FieldOffset(16)] public Size Size;

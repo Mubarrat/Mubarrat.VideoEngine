@@ -14,6 +14,7 @@ public abstract class MathAtom(MathAtomType type = MathAtomType.Ordinary)
     public MathStyle Style = MathStyle.Text;
     public bool IsCramped = false;
     public double Baseline = 0;
+    public string Name = null;
 
     public ref double Width => ref Size.Width;
     public ref double Height => ref Size.Height;
@@ -59,7 +60,8 @@ public abstract class MathAtom(MathAtomType type = MathAtomType.Ordinary)
     public virtual Drawing OnDraw() => new GroupDrawing
     {
         Drawings = [.. ChildrenIterator.Select(static child => child.OnDraw())],
-        Transform = Matrix2D.Translate(Location)
+        Transform = Matrix2D.Translate(Location),
+        Name = Name
     };
 
     protected static MathStyle DownScriptStyle(MathStyle style)

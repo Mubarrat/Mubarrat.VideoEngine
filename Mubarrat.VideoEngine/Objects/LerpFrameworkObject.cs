@@ -24,7 +24,7 @@ public sealed class LerpFrameworkObject(FrameworkObject from, FrameworkObject to
     public override Drawing ToDrawing()
     {
         Drawing result = From.ToDrawing().Lerp(To.ToDrawing(), Time);
-        result.Transform = LayoutTransform * RenderTransform * result.Transform;
+        result.Transform = result.Transform * LayoutTransform * RenderTransform;
         result.Opacity *= Opacity;
         result.Name = string.IsNullOrWhiteSpace(Name) ? result.Name : Name;
         return result;

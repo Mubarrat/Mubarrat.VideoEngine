@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 namespace Mubarrat.VideoEngine;
 
 [StructLayout(LayoutKind.Explicit, Pack = 8, Size = 48)]
+// as row vector: [ScaleX, SkewX, OffsetX; SkewY, ScaleY, OffsetY; 0, 0, 1]
 public struct Matrix2D : IEquatable<Matrix2D>, ILerpable<Matrix2D>
 {
     [field: FieldOffset(0)] public double ScaleX = 1;
@@ -49,6 +50,8 @@ public struct Matrix2D : IEquatable<Matrix2D>, ILerpable<Matrix2D>
     public static Matrix2D Translate(Point offset) => new(1, 0, 0, 1, offset.X, offset.Y);
 
     public static Matrix2D Scale(double sx, double sy) => new(sx, 0, 0, sy, 0, 0);
+    public static Matrix2D Scale(double sx, double sy, double centerX, double centerY) => Translate(-centerX, -centerY) * Scale(sx, sy) * Translate(centerX, centerY);
+    public static Matrix2D Scale(double sx, double sy, Point center) => Translate(-center) * Scale(sx, sy) * Translate(center);
 
     public static Matrix2D Skew(double sx, double sy) => new(1, sx, sy, 1, 0, 0);
 

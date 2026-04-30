@@ -34,7 +34,8 @@ public sealed class SymbolMathAtom(string text = "") : MathAtom
     public override Drawing OnDraw() => new PathDrawing
     {
         Path = OpenTypeTextShaper.Shape(Text, Metrics ?? throw new InvalidOperationException("Metrics must be set for SymbolMathAtom"), new OpenTypeShapingOptions(GetFinalFeatures()))
-                                 .ToPath2D(Metrics.Value.FontSize, Location + (0, Baseline), false)
+                                 .ToPath2D(Metrics.Value.FontSize, Location + (0, Baseline), false),
+        Name = Name
     };
 
     private IReadOnlyCollection<string> GetFinalFeatures()

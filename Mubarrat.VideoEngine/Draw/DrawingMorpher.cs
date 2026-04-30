@@ -1,247 +1,528 @@
 using Mubarrat.VideoEngine.Immutable;
+using System.Runtime.CompilerServices;
 
 namespace Mubarrat.VideoEngine.Draw;
 
 internal static class DrawingMorpher
 {
+    private readonly record struct MorphCandidate(
+        Drawing Drawing,
+        Rect Bounds,
+        Point Center,
+        double Area,
+        int Depth,
+        string Name,
+        bool IsGroup)
+    {
+        public bool IsNamed => !string.IsNullOrWhiteSpace(Name);
+    }
+
     public static Drawing Lerp(Drawing from, Drawing to, double t)
     {
-        var fromNodes = new List<MorphNode>(16);
-        var toNodes = new List<MorphNode>(16);
+        var absolute = MorphNodeAbs(from, to, t, new(PairComparer.Instance));
+        RelativizeTree(absolute, Matrix2D.Identity);
+        return absolute;
+    }
 
-        AppendLeaves(from, Matrix2D.Identity, 1, null, null, default, fromNodes);
-        AppendLeaves(to, Matrix2D.Identity, 1, null, null, default, toNodes);
+    private static Drawing MorphNodeAbs(
+        Drawing from,
+        Drawing to,
+        double t,
+        HashSet<(Drawing From, Drawing To)> visited)
+    {
+        if (!visited.Add((from, to)))
+            return t < 0.5 ? (Drawing)from.Clone() : (Drawing)to.Clone();
 
-        if (fromNodes.Count == 0)
-            fromNodes.Add(CreatePlaceholderNode(toNodes.Count > 0 ? toNodes[0].Name : string.Empty));
-        if (toNodes.Count == 0)
-            toNodes.Add(CreatePlaceholderNode(fromNodes.Count > 0 ? fromNodes[0].Name : string.Empty));
+        if (from is PathDrawing fromPath && to is PathDrawing toPath)
+            return MorphPathToPath(fromPath, toPath, t);
 
-        var pairs = new List<(PathDrawing From, PathDrawing To, string Name)>(Math.Max(fromNodes.Count, toNodes.Count));
-        bool[] fromUsed = new bool[fromNodes.Count];
-        bool[] toUsed = new bool[toNodes.Count];
+        if (from is PathDrawing fromOnlyPath && to is GroupDrawing toGroup)
+            return MorphPathToGroup(fromOnlyPath, toGroup, t);
 
-        var fromNamed = BuildNameBuckets(fromNodes);
-        var toNamed = BuildNameBuckets(toNodes);
+        if (from is GroupDrawing fromGroup && to is PathDrawing toOnlyPath)
+            return MorphGroupToPath(fromGroup, toOnlyPath, t);
 
-        foreach (var (name, fromIndices) in fromNamed)
+        if (from is GroupDrawing fromGroup2 && to is GroupDrawing toGroup2)
+            return MorphGroupToGroup(fromGroup2, toGroup2, t, visited);
+
+        return MorphFallback(from, to, t);
+    }
+
+    private static Drawing MorphPathToPath(PathDrawing from, PathDrawing to, double t) => from.Lerp(to, t);
+
+    private static Drawing MorphPathToGroup(PathDrawing from, GroupDrawing to, double t)
+    {
+        var clone = (GroupDrawing)to.Clone();
+        clone.Transform = to.Transform.Lerp(from.Transform, t);
+        clone.Opacity = t * to.Opacity;
+        clone.Name = SelectName(from.Name, to.Name, t);
+
+        return t < 0.5
+            ? MorphCollapseToCenter(from, to, t)
+            : clone;
+    }
+
+    private static Drawing MorphGroupToPath(GroupDrawing from, PathDrawing to, double t)
+    {
+        var clone = (PathDrawing)to.Clone();
+        clone.Transform = from.Transform.Lerp(to.Transform, t);
+        clone.Opacity = (1 - t) * from.Opacity;
+        clone.Name = SelectName(from.Name, to.Name, t);
+
+        return t < 0.5
+            ? MorphCollapseToCenter(from, to, t)
+            : clone;
+    }
+
+    private static Drawing MorphGroupToGroup(
+        GroupDrawing from,
+        GroupDrawing to,
+        double t,
+        HashSet<(Drawing From, Drawing To)> visited)
+    {
+        var resultChildren = new List<Drawing>();
+
+        var fromScope = CollectDirectScopeCandidates(from);
+        var toScope = CollectDirectScopeCandidates(to);
+
+        var usedFrom = new HashSet<Drawing>();
+        var usedTo = new HashSet<Drawing>();
+
+        var fromNamed = BucketByName(fromScope);
+        var toNamed = BucketByName(toScope);
+
+        var commonNames = fromNamed.Keys.Intersect(toNamed.Keys, StringComparer.Ordinal)
+            .Select(name => new
+            {
+                Name = name,
+                Depth = Math.Max(MaxDepth(fromNamed[name]), MaxDepth(toNamed[name]))
+            })
+            .OrderByDescending(x => x.Depth)
+            .ThenBy(x => x.Name, StringComparer.Ordinal)
+            .Select(x => x.Name)
+            .ToList();
+
+        foreach (var name in commonNames)
         {
-            if (!toNamed.TryGetValue(name, out var toIndices))
+            var fromNodes = fromNamed[name].Where(n => !usedFrom.Contains(n.Drawing)).ToList();
+            var toNodes = toNamed[name].Where(n => !usedTo.Contains(n.Drawing)).ToList();
+
+            if (fromNodes.Count == 0 || toNodes.Count == 0)
                 continue;
 
-            fromIndices.Sort((a, b) => CompareByHeuristic(fromNodes[a], fromNodes[b]));
-            toIndices.Sort((a, b) => CompareByHeuristic(toNodes[a], toNodes[b]));
-
-            AddPairs(fromNodes, toNodes, fromIndices, toIndices, name, pairs);
-
-            for (int i = 0; i < fromIndices.Count; i++)
-                fromUsed[fromIndices[i]] = true;
-            for (int i = 0; i < toIndices.Count; i++)
-                toUsed[toIndices[i]] = true;
+            MatchNamedNodes(
+                name,
+                fromNodes,
+                toNodes,
+                usedFrom,
+                usedTo,
+                resultChildren,
+                t,
+                visited);
         }
 
-        var fromRemainder = CollectUnused(fromUsed);
-        var toRemainder = CollectUnused(toUsed);
-
-        if (fromRemainder.Count > 0 || toRemainder.Count > 0)
+        foreach (var name in fromNamed.Keys.Except(toNamed.Keys, StringComparer.Ordinal))
         {
-            fromRemainder.Sort((a, b) => CompareByHeuristic(fromNodes[a], fromNodes[b]));
-            toRemainder.Sort((a, b) => CompareByHeuristic(toNodes[a], toNodes[b]));
-            AddPairs(fromNodes, toNodes, fromRemainder, toRemainder, string.Empty, pairs);
+            foreach (var node in fromNamed[name])
+            {
+                if (!usedFrom.Add(node.Drawing))
+                    continue;
+
+                resultChildren.Add(CollapseNode(node, t));
+            }
         }
 
-        if (pairs.Count == 1)
+        foreach (var name in toNamed.Keys.Except(fromNamed.Keys, StringComparer.Ordinal))
         {
-            var (singleFrom, singleTo, name) = pairs[0];
-            var drawing = (PathDrawing)singleFrom.Lerp(singleTo, t);
-            drawing.Name = name;
-            return drawing;
+            foreach (var node in toNamed[name])
+            {
+                if (!usedTo.Add(node.Drawing))
+                    continue;
+
+                resultChildren.Add(ExpandNode(node, t));
+            }
         }
 
-        var resultDrawings = new List<Drawing>(pairs.Count);
-        for (int i = 0; i < pairs.Count; i++)
+        var fromUnnamed = fromScope
+            .Where(n => string.IsNullOrWhiteSpace(n.Name) && !usedFrom.Contains(n.Drawing))
+            .ToList();
+
+        var toUnnamed = toScope
+            .Where(n => string.IsNullOrWhiteSpace(n.Name) && !usedTo.Contains(n.Drawing))
+            .ToList();
+
+        foreach (var (left, right) in BuildHeuristicPairs(fromUnnamed, toUnnamed))
         {
-            var (pairFrom, pairTo, pairName) = pairs[i];
-            var morphed = (PathDrawing)pairFrom.Lerp(pairTo, t);
-            morphed.Name = pairName;
-            resultDrawings.Add(morphed);
+            usedFrom.Add(left.Drawing);
+            usedTo.Add(right.Drawing);
+            resultChildren.Add(MorphNodeAbs(left.Drawing, right.Drawing, t, visited));
+        }
+
+        var remainingFrom = fromScope.Where(n => !usedFrom.Contains(n.Drawing)).ToList();
+        var remainingTo = toScope.Where(n => !usedTo.Contains(n.Drawing)).ToList();
+
+        foreach (var (left, right) in BuildHeuristicPairs(remainingFrom, remainingTo))
+        {
+            usedFrom.Add(left.Drawing);
+            usedTo.Add(right.Drawing);
+            resultChildren.Add(MorphNodeAbs(left.Drawing, right.Drawing, t, visited));
         }
 
         return new GroupDrawing
         {
-            Drawings = resultDrawings,
-            Transform = Matrix2D.Identity,
-            Opacity = 1,
+            Drawings = resultChildren,
+            Transform = from.Transform.Lerp(to.Transform, t),
+            Opacity = from.Opacity.Lerp(to.Opacity, t),
+            Fill = SelectFill(from.Fill, to.Fill, t),
+            Stroke = from.Stroke.Lerp(to.Stroke, t),
             Name = SelectName(from.Name, to.Name, t)
         };
     }
 
-    private static void AddPairs(
-        IReadOnlyList<MorphNode> from,
-        IReadOnlyList<MorphNode> to,
-        IReadOnlyList<int> fromIndices,
-        IReadOnlyList<int> toIndices,
-        string bucketName,
-        ICollection<(PathDrawing From, PathDrawing To, string Name)> output)
+    private static List<MorphCandidate> CollectDirectScopeCandidates(GroupDrawing root)
     {
-        int fromCount = fromIndices.Count;
-        int toCount = toIndices.Count;
+        var list = new List<MorphCandidate>();
 
-        int pairCount = Math.Max(fromCount, toCount);
-        if (pairCount == 0)
+        if (root.Drawings is null)
+            return list;
+
+        for (int i = 0; i < root.Drawings.Count; i++)
+        {
+            CollectScopeCandidatesRecursive(
+                root.Drawings[i],
+                root.Transform,
+                1,
+                list);
+        }
+
+        return list;
+    }
+
+    private static Drawing MorphFallback(Drawing from, Drawing to, double t)
+    {
+        var clone = t < 0.5 ? (Drawing)from.Clone() : (Drawing)to.Clone();
+        clone.Transform = from.Transform.Lerp(to.Transform, t);
+        clone.Opacity = from.Opacity.Lerp(to.Opacity, t);
+        clone.Name = SelectName(from.Name, to.Name, t);
+        clone.Fill = SelectFill(from.Fill, to.Fill, t);
+        clone.Stroke = from.Stroke.Lerp(to.Stroke, t);
+        return clone;
+    }
+
+    private static Drawing MorphCollapseToCenter(Drawing from, Drawing to, double t)
+    {
+        var center = GetCenter(from.Bounds);
+        var clone = t < 0.5 ? (Drawing)from.Clone() : (Drawing)to.Clone();
+        clone.Transform *= Matrix2D.Scale(1 - t, 1 - t, center);
+        clone.Opacity = (1 - t) * from.Opacity;
+        return clone;
+    }
+
+    private static Drawing ExpandNode(MorphCandidate node, double t)
+    {
+        var clone = (Drawing)node.Drawing.Clone();
+        clone.Transform *= Matrix2D.Scale(t, t, node.Bounds.Center);
+        clone.Opacity *= t;
+        clone.Name = node.Name;
+        return clone;
+    }
+
+    private static Drawing CollapseNode(MorphCandidate node, double t)
+    {
+        var clone = (Drawing)node.Drawing.Clone();
+        clone.Transform *= Matrix2D.Scale(1 - t, 1 - t, node.Bounds.Center);
+        clone.Opacity *= 1 - t;
+        clone.Name = node.Name;
+        return clone;
+    }
+
+    private static void MatchNamedNodes(
+        string name,
+        List<MorphCandidate> fromNodes,
+        List<MorphCandidate> toNodes,
+        HashSet<Drawing> usedFrom,
+        HashSet<Drawing> usedTo,
+        List<Drawing> result,
+        double t,
+        HashSet<(Drawing From, Drawing To)> visited)
+    {
+        fromNodes.Sort(CandidateComparer.Instance);
+        toNodes.Sort(CandidateComparer.Instance);
+
+        int fromCount = fromNodes.Count;
+        int toCount = toNodes.Count;
+
+        if (fromCount == 0 || toCount == 0)
             return;
 
-        for (int i = 0; i < pairCount; i++)
+        if (fromCount == toCount)
         {
-            int fromIndex = fromCount == 0 ? -1 : fromIndices[(int)((long)i * fromCount / pairCount)];
-            int toIndex = toCount == 0 ? -1 : toIndices[(int)((long)i * toCount / pairCount)];
-
-            MorphNode fromNode = fromIndex >= 0 ? from[fromIndex] : CreatePlaceholderNode(bucketName);
-            MorphNode toNode = toIndex >= 0 ? to[toIndex] : CreatePlaceholderNode(bucketName);
-
-            string resolvedName = ResolvePairName(fromNode.Name, toNode.Name, bucketName);
-            output.Add((fromNode.Drawing, toNode.Drawing, resolvedName));
-        }
-    }
-
-    private static Dictionary<string, List<int>> BuildNameBuckets(IReadOnlyList<MorphNode> nodes)
-    {
-        var map = new Dictionary<string, List<int>>(StringComparer.Ordinal);
-
-        for (int i = 0; i < nodes.Count; i++)
-        {
-            string name = nodes[i].Name;
-            if (string.IsNullOrWhiteSpace(name))
-                continue;
-
-            if (!map.TryGetValue(name, out var list))
+            for (int i = 0; i < fromCount; i++)
             {
-                list = [];
-                map[name] = list;
+                var left = fromNodes[i];
+                var right = toNodes[i];
+                usedFrom.Add(left.Drawing);
+                usedTo.Add(right.Drawing);
+                result.Add(MorphNodeAbs(left.Drawing, right.Drawing, t, visited));
             }
-
-            list.Add(i);
+            return;
         }
 
-        return map;
-    }
-
-    private static List<int> CollectUnused(IReadOnlyList<bool> used)
-    {
-        var indices = new List<int>(used.Count);
-        for (int i = 0; i < used.Count; i++)
+        if (fromCount < toCount)
         {
-            if (!used[i])
-                indices.Add(i);
+            var expanded = ExpandIndices(fromCount, toCount);
+            for (int i = 0; i < toCount; i++)
+            {
+                var left = fromNodes[expanded[i]];
+                var right = toNodes[i];
+                usedFrom.Add(left.Drawing);
+                usedTo.Add(right.Drawing);
+                result.Add(MorphNodeAbs(left.Drawing, right.Drawing, t, visited));
+            }
+            return;
         }
 
-        return indices;
-    }
-
-    private static void AppendLeaves(
-        Drawing drawing,
-        Matrix2D parentTransform,
-        double parentOpacity,
-        string? inheritedName,
-        IBrush? inheritedFill,
-        Pen inheritedStroke,
-        List<MorphNode> output)
-    {
-        string? effectiveName = string.IsNullOrWhiteSpace(drawing.Name) ? inheritedName : drawing.Name;
-
-        switch (drawing)
+        var merged = ExpandIndices(toCount, fromCount);
+        for (int i = 0; i < fromCount; i++)
         {
-            case PathDrawing path:
-            {
-                var flattened = new PathDrawing
-                {
-                    Path = path.Path,
-                    Fill = path.Fill ?? inheritedFill,
-                    Stroke = path.Stroke.Brush is null ? inheritedStroke : path.Stroke,
-                    Transform = parentTransform * path.Transform,
-                    Opacity = parentOpacity * path.Opacity,
-                    Name = effectiveName ?? string.Empty
-                };
-
-                Rect bounds = flattened.Bounds.Normalized;
-                Point center = bounds.Center;
-                if (double.IsNaN(center.X) || double.IsNaN(center.Y))
-                    center = Point.Zero;
-
-                double area = bounds.Size.Area;
-                if (double.IsNaN(area))
-                    area = 0;
-
-                output.Add(new MorphNode(flattened, effectiveName ?? string.Empty, center, area));
-                break;
-            }
-
-            case GroupDrawing group:
-            {
-                Matrix2D nextTransform = parentTransform * group.Transform;
-                double nextOpacity = parentOpacity * group.Opacity;
-                IBrush? nextFill = group.Fill ?? inheritedFill;
-                Pen nextStroke = group.Stroke.Brush is null ? inheritedStroke : group.Stroke;
-
-                var children = group.Drawings;
-                if (children is null || children.Count == 0)
-                    return;
-
-                for (int i = 0; i < children.Count; i++)
-                    AppendLeaves(children[i], nextTransform, nextOpacity, effectiveName, nextFill, nextStroke, output);
-
-                break;
-            }
-
-            default:
-                throw new NotSupportedException($"Unsupported drawing type for morphing: {drawing.GetType().Name}");
+            var left = fromNodes[i];
+            var right = toNodes[merged[i]];
+            usedFrom.Add(left.Drawing);
+            usedTo.Add(right.Drawing);
+            result.Add(MorphNodeAbs(left.Drawing, right.Drawing, t, visited));
         }
     }
 
-    private static MorphNode CreatePlaceholderNode(string? name)
+    private static List<(MorphCandidate From, MorphCandidate To)> BuildHeuristicPairs(
+        List<MorphCandidate> fromNodes,
+        List<MorphCandidate> toNodes)
+    {
+        if (fromNodes.Count == 0 && toNodes.Count == 0)
+            return [];
+
+        if (fromNodes.Count == 0)
+        {
+            var list = new List<(MorphCandidate From, MorphCandidate To)>(toNodes.Count);
+            for (int i = 0; i < toNodes.Count; i++)
+                list.Add((CreatePlaceholder(toNodes[i]), toNodes[i]));
+            return list;
+        }
+
+        if (toNodes.Count == 0)
+        {
+            var list = new List<(MorphCandidate From, MorphCandidate To)>(fromNodes.Count);
+            for (int i = 0; i < fromNodes.Count; i++)
+                list.Add((fromNodes[i], CreatePlaceholder(fromNodes[i])));
+            return list;
+        }
+
+        fromNodes.Sort(CandidateComparer.Instance);
+        toNodes.Sort(CandidateComparer.Instance);
+
+        if (fromNodes.Count == toNodes.Count)
+        {
+            var list = new List<(MorphCandidate From, MorphCandidate To)>(fromNodes.Count);
+            for (int i = 0; i < fromNodes.Count; i++)
+                list.Add((fromNodes[i], toNodes[i]));
+            return list;
+        }
+
+        if (fromNodes.Count < toNodes.Count)
+        {
+            var expanded = ExpandIndices(fromNodes.Count, toNodes.Count);
+            var list = new List<(MorphCandidate From, MorphCandidate To)>(toNodes.Count);
+            for (int i = 0; i < toNodes.Count; i++)
+                list.Add((fromNodes[expanded[i]], toNodes[i]));
+            return list;
+        }
+
+        var merged = ExpandIndices(toNodes.Count, fromNodes.Count);
+        var result = new List<(MorphCandidate From, MorphCandidate To)>(fromNodes.Count);
+        for (int i = 0; i < fromNodes.Count; i++)
+            result.Add((fromNodes[i], toNodes[merged[i]]));
+        return result;
+    }
+
+    private static MorphCandidate CreatePlaceholder(MorphCandidate reference)
     {
         var drawing = new PathDrawing
         {
             Path = new Path2D(true),
             Fill = null!,
             Stroke = default,
-            Transform = Matrix2D.Identity,
+            Transform = Matrix2D.Scale(0, 0, reference.Center),
             Opacity = 0,
-            Name = name ?? string.Empty
+            Name = reference.Name
         };
 
-        return new MorphNode(drawing, name ?? string.Empty, Point.Zero, 0);
+        return new MorphCandidate(
+            drawing,
+            Rect.Empty,
+            reference.Center,
+            reference.Area,
+            reference.Depth,
+            reference.Name,
+            false);
     }
 
-    private static int CompareByHeuristic(in MorphNode a, in MorphNode b)
+    private static void CollectScopeCandidatesRecursive(
+        Drawing drawing,
+        Matrix2D parentAbs,
+        int depth,
+        List<MorphCandidate> output)
     {
-        int byX = a.Center.X.CompareTo(b.Center.X);
-        if (byX != 0) return byX;
+        var abs = drawing.Transform * parentAbs;
+        var absClone = CloneAtTransform(drawing, abs);
+        var bounds = absClone.Bounds.Normalized;
+        var center = GetCenter(bounds);
+        var area = GetArea(bounds);
+        var name = drawing.Name ?? string.Empty;
 
-        int byY = a.Center.Y.CompareTo(b.Center.Y);
-        if (byY != 0) return byY;
+        if (drawing is PathDrawing path)
+        {
+            output.Add(new MorphCandidate(
+                absClone,
+                bounds,
+                center,
+                area,
+                depth,
+                name,
+                false));
+            return;
+        }
 
-        return a.Area.CompareTo(b.Area);
+        if (drawing is GroupDrawing group)
+        {
+            if (group.Drawings is { Count: > 0 })
+            {
+                for (int i = 0; i < group.Drawings.Count; i++)
+                    CollectScopeCandidatesRecursive(group.Drawings[i], abs, depth + 1, output);
+            }
+
+            if (!string.IsNullOrWhiteSpace(group.Name))
+            {
+                output.Add(new MorphCandidate(
+                    absClone,
+                    bounds,
+                    center,
+                    area,
+                    depth,
+                    group.Name,
+                    true));
+            }
+        }
     }
 
-    private static string ResolvePairName(string from, string to, string bucket)
+    private static Drawing CloneAtTransform(Drawing drawing, Matrix2D transform)
     {
-        if (!string.IsNullOrWhiteSpace(bucket))
-            return bucket;
+        var clone = (Drawing)drawing.Clone();
+        clone.Transform = transform;
+        return clone;
+    }
 
-        if (!string.IsNullOrWhiteSpace(from) && string.Equals(from, to, StringComparison.Ordinal))
-            return from;
+    private static Dictionary<string, List<MorphCandidate>> BucketByName(List<MorphCandidate> nodes)
+    {
+        var map = new Dictionary<string, List<MorphCandidate>>(StringComparer.Ordinal);
 
-        if (!string.IsNullOrWhiteSpace(to))
-            return to;
+        for (int i = 0; i < nodes.Count; i++)
+        {
+            var node = nodes[i];
+            if (string.IsNullOrWhiteSpace(node.Name))
+                continue;
 
-        return from;
+            if (!map.TryGetValue(node.Name, out var list))
+                map[node.Name] = list = [];
+
+            list.Add(node);
+        }
+
+        return map;
+    }
+
+    private static List<int> ExpandIndices(int count, int target)
+    {
+        var indices = new List<int>(target);
+
+        for (int i = 0; i < count; i++)
+            indices.Add(i);
+
+        while (indices.Count < target)
+        {
+            int needed = target - indices.Count;
+            for (int i = 0; i < needed; i++)
+            {
+                int sourceIndex = i % count;
+                indices.Add(sourceIndex);
+            }
+        }
+
+        return indices;
+    }
+
+    private static int MaxDepth(List<MorphCandidate> nodes)
+        => nodes.Count == 0 ? 0 : nodes.Max(n => n.Depth);
+
+    private static Point GetCenter(Rect bounds)
+    {
+        var center = bounds.Center;
+        if (double.IsNaN(center.X) || double.IsNaN(center.Y))
+            return Point.Zero;
+        return center;
+    }
+
+    private static double GetArea(Rect bounds)
+    {
+        var area = bounds.Size.Area;
+        if (double.IsNaN(area))
+            return 0;
+        return area;
+    }
+
+    private static void RelativizeTree(Drawing drawing, Matrix2D parentAbs)
+    {
+        var abs = drawing.Transform;
+        if (parentAbs.IsInvertible)
+            drawing.Transform /= parentAbs;
+        (drawing as GroupDrawing)?.Drawings.ForEach(child => RelativizeTree(child, abs));
     }
 
     private static string SelectName(string from, string to, double t)
-        => !string.IsNullOrWhiteSpace(from) && string.Equals(from, to, StringComparison.Ordinal)
-            ? from
-            : (t < 0.5 ? from : to);
+    {
+        if (!string.IsNullOrWhiteSpace(from) && string.Equals(from, to, StringComparison.Ordinal))
+            return from;
 
-    private readonly record struct MorphNode(PathDrawing Drawing, string Name, Point Center, double Area);
+        return t < 0.5 ? from : to;
+    }
+
+    private static IBrush? SelectFill(IBrush? from, IBrush? to, double t) => from?.Lerp(to ?? IBrush.Transparent, t) ?? to?.Lerp(IBrush.Transparent, t) ?? null;
+
+    private sealed class PairComparer : IEqualityComparer<(Drawing From, Drawing To)>
+    {
+        public static readonly PairComparer Instance = new();
+
+        public bool Equals((Drawing From, Drawing To) x, (Drawing From, Drawing To) y)
+            => ReferenceEquals(x.From, y.From) && ReferenceEquals(x.To, y.To);
+
+        public int GetHashCode((Drawing From, Drawing To) obj)
+            => HashCode.Combine(RuntimeHelpers.GetHashCode(obj.From), RuntimeHelpers.GetHashCode(obj.To));
+    }
+
+    private sealed class CandidateComparer : IComparer<MorphCandidate>
+    {
+        public static readonly CandidateComparer Instance = new();
+
+        public int Compare(MorphCandidate x, MorphCandidate y)
+        {
+            int byDepth = y.Depth.CompareTo(x.Depth);
+            if (byDepth != 0) return byDepth;
+
+            int byArea = x.Area.CompareTo(y.Area);
+            if (byArea != 0) return byArea;
+
+            int byX = x.Center.X.CompareTo(y.Center.X);
+            if (byX != 0) return byX;
+
+            return x.Center.Y.CompareTo(y.Center.Y);
+        }
+    }
 }

@@ -109,6 +109,16 @@ public sealed class LatexAtomizer
 
     private static MathAtom BuildCommandAtom(LatexCommandNode command)
     {
+        if (string.Equals(command.Name, "n", StringComparison.Ordinal) && command.RequiredArguments.Count >= 1)
+        {
+            MathAtom mathAtom = ToMathAtom(command.RequiredArguments[0].Body);
+            if (mathAtom.Name is null)
+                mathAtom.Name = LetexParser.FlattenText((command.OptionalArgument ?? command.RequiredArguments[0]).Body);
+            else
+                mathAtom = new HorizontalMathAtom([mathAtom]) { Name = LetexParser.FlattenText((command.OptionalArgument ?? command.RequiredArguments[0]).Body) };
+            return mathAtom;
+        }
+
         if (string.Equals(command.Name, "sqrt", StringComparison.Ordinal) && command.RequiredArguments.Count >= 1)
         {
             MathAtom radicand = ToMathAtom(command.RequiredArguments[0].Body);

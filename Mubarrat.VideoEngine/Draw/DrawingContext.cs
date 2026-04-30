@@ -31,7 +31,7 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
     {
         opacity = double.Clamp(opacity, 0, 1);
         var (currTransform, currOpacity) = CurrentState;
-        stateStack.Push((currTransform * transform, currOpacity * opacity));
+        stateStack.Push((transform * currTransform, currOpacity * opacity));
     }
 
     public void Pop() => stateStack.TryPop(out _);
@@ -51,7 +51,7 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
                 Rect? strokeSamplingBounds = pd.Stroke.Brush is null ? NormalizeRectOrNull(inheritedPaint.ScopeBounds) : null;
 
                 PushState(pd.Transform, pd.Opacity);
-                try { DrawPath(pd.Path, effectiveFill, effectiveStroke, fillSamplingBounds, strokeSamplingBounds); }
+                try { DrawPath(pd.Path * CurrentState.Transform, effectiveFill, effectiveStroke, fillSamplingBounds, strokeSamplingBounds); }
                 finally { Pop(); }
                 break;
 
@@ -147,8 +147,8 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
 
                 foreach (var e in es)
                 {
-                    var (x1d, y1d) = e.Point1 * transform;
-                    var (x2d, y2d) = e.Point2 * transform;
+                    var (x1d, y1d) = e.Point1;
+                    var (x2d, y2d) = e.Point2;
 
                     if (!double.IsFinite(x1d) || !double.IsFinite(y1d) || !double.IsFinite(x2d) || !double.IsFinite(y2d))
                         continue;
@@ -369,16 +369,16 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
     }
 
     private static void AccumulateSpan(
-    IBrush fill,
-    Span<float> accumA,
-    Span<Vector4> accumC,
-    int width,
-    double shapeLeft,
-    double invShapeW,
-    double sy,
-    double dx,
-    double xStart,
-    double xEnd)
+        IBrush fill,
+        Span<float> accumA,
+        Span<Vector4> accumC,
+        int width,
+        double shapeLeft,
+        double invShapeW,
+        double sy,
+        double dx,
+        double xStart,
+        double xEnd)
     {
         if (xEnd <= xStart) return;
 
@@ -393,7 +393,7 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
 
             double sx = Math.Clamp((x + 0.5 + dx - shapeLeft) * invShapeW, 0.0, 1.0);
 
-            var color = fill.Sample(sx, sy).ToPremultiplied;
+            var color = fill?.Sample(sx, sy).ToPremultiplied ?? default;
 
             float cov = (float)coverage;
 
@@ -546,8 +546,8 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
                 for (int i = 0; i < segmentCount; i++)
                 {
                     ref readonly var e = ref es[i];
-                    var (x1, y1) = e.Point1 * transform;
-                    var (x2, y2) = e.Point2 * transform;
+                    var (x1, y1) = e.Point1;
+                    var (x2, y2) = e.Point2;
 
                     double dx = x2 - x1;
                     double dy = y2 - y1;
@@ -607,8 +607,8 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
             for (int i = 0; i < es.Length; i++)
             {
                 ref readonly var e = ref es[i];
-                var (x1, y1) = e.Point1 * transform;
-                var (x2, y2) = e.Point2 * transform;
+                var (x1, y1) = e.Point1;
+                var (x2, y2) = e.Point2;
 
                 double dx = x2 - x1;
                 double dy = y2 - y1;

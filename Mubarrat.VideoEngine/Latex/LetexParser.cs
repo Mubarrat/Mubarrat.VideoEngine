@@ -395,7 +395,7 @@ public sealed class LetexParser(IReadOnlyList<LatexToken> tokens)
         return false;
     }
 
-    private static string FlattenText(LatexSequenceNode sequence)
+    internal static string FlattenText(LatexSequenceNode sequence)
     {
         if (sequence.Items.Count == 0)
             return string.Empty;
@@ -403,7 +403,7 @@ public sealed class LetexParser(IReadOnlyList<LatexToken> tokens)
         return string.Concat(sequence.Items.Select(GetNodeText));
     }
 
-    private static string GetNodeText(LatexNode node)
+    internal static string GetNodeText(LatexNode node)
     {
         return node switch
         {

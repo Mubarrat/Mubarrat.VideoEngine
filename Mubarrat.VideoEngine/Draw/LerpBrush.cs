@@ -8,7 +8,7 @@ public struct LerpBrush(IBrush from, IBrush to, double time) : IBrush, IEquatabl
     public IBrush From = from, To = to;
     public double Time = time;
 
-    public readonly Color32 Sample(double x, double y) => From.Sample(x, y).Lerp(To.Sample(x, y), Time);
+    public readonly Color32 Sample(double x, double y) => (From?.Sample(x, y) ?? default).Lerp(To?.Sample(x, y) ?? default, Time);
 
     public readonly bool Equals(LerpBrush other) => From.Equals(other.From) && To.Equals(other.To) && Time == other.Time;
 

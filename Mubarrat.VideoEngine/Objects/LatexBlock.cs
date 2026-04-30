@@ -52,7 +52,7 @@ public sealed class LatexBlock : FrameworkObject
         }
 
         Drawing drawing = (Drawing)cachedDrawing.Clone();
-        drawing.Transform = Matrix2D.Translate(-cachedBounds.Location) * LayoutTransform * RenderTransform * drawing.Transform;
+        drawing.Transform *= LayoutTransform * RenderTransform;
         drawing.Opacity *= Opacity;
 
         if (!string.IsNullOrWhiteSpace(Name))

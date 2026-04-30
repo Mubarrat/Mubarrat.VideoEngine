@@ -16,30 +16,27 @@ public struct Subpath(params Edge[] edges) : ILerpable<Subpath>
         if (t <= 0) return this;
         if (t >= 1) return target;
 
-        if (Edges.Length == 0 && target.Edges.Length == 0)
-            return this;
-
-        // Collapse / expand
-        if (Edges.Length == 0)
+        switch (Edges?.Length ?? 0, target.Edges?.Length ?? 0)
         {
-            var center = new Edge(target.CenterPoint);
-            return new Subpath(Array.ConvertAll(target.Edges, e => center.Lerp(e, t))).SanitizeForRasterizer();
-        }
-
-        if (target.Edges.Length == 0)
-        {
-            var center = new Edge(CenterPoint);
-            return new Subpath(Array.ConvertAll(Edges, e => e.Lerp(center, t))).SanitizeForRasterizer();
+            case (0, 0):
+                return this;
+            // Collapse / expand
+            case (0, _):
+                var center = new Edge(target.CenterPoint);
+                return new Subpath(Array.ConvertAll(target.Edges!, e => center.Lerp(e, t))).SanitizeForRasterizer();
+            case (_, 0):
+                center = new Edge(CenterPoint);
+                return new Subpath(Array.ConvertAll(Edges!, e => e.Lerp(center, t))).SanitizeForRasterizer();
         }
 
         if (Edges.SequenceEqual(target.Edges)) // Rare but cheap case
             return target;
 
-        bool thisClosed = IsClosed(Edges);
-        bool targetClosed = IsClosed(target.Edges);
+        bool thisClosed = IsClosed(Edges!);
+        bool targetClosed = IsClosed(target.Edges!);
         bool morphClosed = thisClosed && targetClosed;
 
-        int count = ComputeSampleCount(Edges.Length, target.Edges.Length);
+        int count = ComputeSampleCount(Edges!.Length, target.Edges!.Length);
         int pointCount = morphClosed ? count : count + 1;
 
         var a = SamplePoints(pointCount, thisClosed);

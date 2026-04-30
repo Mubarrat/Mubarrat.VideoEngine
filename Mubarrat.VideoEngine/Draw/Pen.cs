@@ -11,7 +11,7 @@ public readonly record struct Pen(
     public Color32 Sample(double x, double y) => Brush.Sample(x, y);
 
     public Pen Lerp(in Pen other, double t) => new(
-        Brush?.Lerp(other.Brush, t) ?? other.Brush?.Lerp(null!, 1 - t) ?? null!,
+        Brush?.Lerp(other.Brush, t) ?? other.Brush?.Lerp(IBrush.Transparent, 1 - t) ?? IBrush.Transparent,
         Thickness.Lerp(other.Thickness, t),
         t < 0.5 ? Cap : other.Cap,
         t < 0.5 ? Join : other.Join,
