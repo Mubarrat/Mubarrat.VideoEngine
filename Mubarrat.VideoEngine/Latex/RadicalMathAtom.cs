@@ -40,7 +40,7 @@ public sealed class RadicalMathAtom(MathAtom radicand, MathAtom? degree) : MathA
 
         var extraAscender = c.RadicalExtraAscender * metrics.Scale;
         var rule = c.RadicalRuleThickness * metrics.Scale;
-        var gap = c.RadicalVerticalGap * metrics.Scale;
+        var gap = (Style == MathStyle.Display ? c.RadicalDisplayStyleVerticalGap : c.RadicalVerticalGap) * metrics.Scale;
         var kernBefore = c.RadicalKernBeforeDegree * metrics.Scale;
         var kernAfter = c.RadicalKernAfterDegree * metrics.Scale;
         var degreeRaise = c.RadicalDegreeBottomRaisePercent / 100d;
@@ -67,7 +67,6 @@ public sealed class RadicalMathAtom(MathAtom radicand, MathAtom? degree) : MathA
         var metrics = Metrics ?? throw new InvalidOperationException("Metrics must be set for RadicalMathAtom");
         var c = MathTable.MathConstants;
         var rule = c.RadicalRuleThickness * metrics.Scale;
-        var gap = c.RadicalVerticalGap * metrics.Scale;
         var drawing = (GroupDrawing)base.OnDraw();
         drawing.Drawings.Add(new PathDrawing
         {
