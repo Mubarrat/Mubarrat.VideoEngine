@@ -94,23 +94,16 @@ public struct Color32 : ILerpable<Color32>, IEquatable<Color32>
             (byte)Math.Clamp((aDst - aSrc) * 255, 0, 255));
     }
 
-    public static Color32 BlendPremultiplied(Color32 src, Color32 dst)
-    {
-        byte invA = (byte)(255 - src.A);
-        return new Color32(
-            (byte)Math.Min(255, src.R + (dst.R * invA / 255)),
-            (byte)Math.Min(255, src.G + (dst.G * invA / 255)),
-            (byte)Math.Min(255, src.B + (dst.B * invA / 255)),
-            (byte)Math.Min(255, src.A + dst.A));
-    }
-
     public static void BlendPremultiplied(Color32 src, ref Color32 dst)
     {
         byte invA = (byte)(255 - src.A);
-        dst.R = (byte)Math.Min(255, src.R + (dst.R * invA / 255));
-        dst.G = (byte)Math.Min(255, src.G + (dst.G * invA / 255));
-        dst.B = (byte)Math.Min(255, src.B + (dst.B * invA / 255));
-        dst.A = (byte)Math.Min(255, src.A + dst.A);
+
+        dst.R = (byte)Math.Min(255, src.R + (dst.R * invA + 127) / 255);
+        dst.G = (byte)Math.Min(255, src.G + (dst.G * invA + 127) / 255);
+        dst.B = (byte)Math.Min(255, src.B + (dst.B * invA + 127) / 255);
+
+        // ✅ CORRECT alpha
+        dst.A = (byte)Math.Min(255, src.A + (dst.A * invA + 127) / 255);
     }
 
     public readonly Color32 ToPremultiplied => new((byte)(R * A / 255), (byte)(G * A / 255), (byte)(B * A / 255), A);

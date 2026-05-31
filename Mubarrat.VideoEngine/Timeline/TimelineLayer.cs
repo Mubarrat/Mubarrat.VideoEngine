@@ -253,17 +253,15 @@ public class TimelineLayer
         return this;
     }
 
-    public void Draw(DrawingContext drawingContext, double time)
+    public void Draw(IRenderer renderer, double time)
     {
         switch (commands.Where(x => x.StartTime <= time).Aggregate(null as BaseObject, (prev, command) => command.Execute(prev, time)))
         {
             case Drawing drawing:
-                drawingContext.Draw(drawing);
+                renderer.Draw(drawing);
                 break;
             case FrameworkObject frameworkObject:
-                //if (hasAvailableSize)
-                //    UpdateRootFrameworkObjectLayout(frameworkObject, latestAvailableSize);
-                drawingContext.Draw(frameworkObject.ToDrawing());
+                renderer.Draw(frameworkObject.ToDrawing());
                 break;
         }
     }

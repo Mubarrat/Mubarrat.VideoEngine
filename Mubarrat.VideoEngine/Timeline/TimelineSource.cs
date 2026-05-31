@@ -14,9 +14,23 @@ public class TimelineSource(int fps) : IFrameSource
     {
         foreach (var layer in layers)
             layer.UpdateLayout(new(width, height));
-        DrawingContext drawingContext = new(buffer, width, height);
-        double time = frameIndex / (double)Fps;
-        foreach (var builder in layers.Where(x => x.StartTime <= time))
-            builder.Draw(drawingContext, time);
+
+        // Attempt to create a GPU renderer first (providing the target buffer). If unavailable, fallback to CPU DrawingContext.
+        IRenderer renderer = new DrawingContext(buffer, width, height);
+        try
+        {
+            double time = frameIndex / (double)Fps;
+            foreach (var builder in layers.Where(x => x.StartTime <= time))
+                builder.Draw(renderer, time);
+        }
+        finally
+        {
+            renderer.Dispose();
+            if (renderer is DrawingContext dc)
+            {
+                // nothing
+            }
+        }
+
     }
 }

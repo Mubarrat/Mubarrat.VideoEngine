@@ -11,7 +11,7 @@ public static class ShapingResultPathExtensions
     /// <summary>
     /// Converts a shaped text run into a <see cref="PathBuilder"/> using the glyph outlines from the font.
     /// </summary>
-    public static PathBuilder ToPathBuilder(this ShapingResult shapingResult, double fontSize, Point origin, bool flipY = true)
+    public static PathBuilder ToPathBuilder(this ShapingResult shapingResult, double fontSize, Point origin)
     {
         ArgumentNullException.ThrowIfNull(shapingResult);
 
@@ -42,12 +42,12 @@ public static class ShapingResultPathExtensions
                 for (int contourIndex = 0; contourIndex < contours.Length; contourIndex++)
                 {
                     var contour = contours[contourIndex].Points;
-                    AppendContour(builder, contour, glyphOriginX, glyphOriginY, scale, flipY);
+                    AppendContour(builder, contour, glyphOriginX, glyphOriginY, scale);
                 }
             }
             else if (hasCff && glyph.GlyphId < cff.CharStrings.Length)
             {
-                AppendCffGlyph(builder, cff, glyph.GlyphId, glyphOriginX, glyphOriginY, scale, flipY);
+                AppendCffGlyph(builder, cff, glyph.GlyphId, glyphOriginX, glyphOriginY, scale);
             }
 
             penX += glyph.XAdvance;
@@ -60,35 +60,26 @@ public static class ShapingResultPathExtensions
     /// <summary>
     /// Converts a shaped text run into a <see cref="PathBuilder"/> using origin (0,0).
     /// </summary>
-    public static PathBuilder ToPathBuilder(this ShapingResult shapingResult, double fontSize, bool flipY = true)
-        => shapingResult.ToPathBuilder(fontSize, Point.Zero, flipY);
+    public static PathBuilder ToPathBuilder(this ShapingResult shapingResult, double fontSize) => shapingResult.ToPathBuilder(fontSize, Point.Zero);
 
     /// <summary>
     /// Converts a shaped text run to <see cref="Path2D"/> through <see cref="PathBuilder"/>.
     /// </summary>
-    public static Path2D ToPath2D(this ShapingResult shapingResult, double fontSize, Point origin, bool isNonZeroFill = true, bool flipY = true)
-        => shapingResult.ToPathBuilder(fontSize, origin, flipY).Build(isNonZeroFill);
+    public static Path2D ToPath2D(this ShapingResult shapingResult, double fontSize, Point origin) => shapingResult.ToPathBuilder(fontSize, origin).Build(true);
 
     /// <summary>
     /// Converts a shaped text run to <see cref="Path2D"/> through <see cref="PathBuilder"/> using origin (0,0).
     /// </summary>
-    public static Path2D ToPath2D(this ShapingResult shapingResult, double fontSize, bool isNonZeroFill = true, bool flipY = true)
-        => shapingResult.ToPathBuilder(fontSize, Point.Zero, flipY).Build(isNonZeroFill);
+    public static Path2D ToPath2D(this ShapingResult shapingResult, double fontSize) => shapingResult.ToPathBuilder(fontSize, Point.Zero).Build(true);
 
-    private static void AppendContour(
-        PathBuilder builder,
-        GlyfTable.GlyphOutlinePoint[] contour,
-        double glyphOriginX,
-        double glyphOriginY,
-        double scale,
-        bool flipY)
+    private static void AppendContour(PathBuilder builder, GlyfTable.GlyphOutlinePoint[] contour, double glyphOriginX, double glyphOriginY, double scale)
     {
         if (contour is null || contour.Length == 0)
             return;
         static Vector2 Midpoint(in Vector2 a, in Vector2 b) => (a + b) * 0.5f;
         Point Transform(in Vector2 position) => new(
             glyphOriginX + (position.X * scale),
-            glyphOriginY + (position.Y * (flipY ? -scale : scale)));
+            glyphOriginY + (position.Y * -scale));
         static bool NearlyEqual(in Vector2 a, in Vector2 b)
             => MathF.Abs(a.X - b.X) <= 1e-6f && MathF.Abs(a.Y - b.Y) <= 1e-6f;
         int startIndex = FindStartIndex(contour);
@@ -136,9 +127,9 @@ public static class ShapingResultPathExtensions
         return start.OnCurve ? start.Position : (contour[(startIndex - 1 + contour.Length) % contour.Length].Position + start.Position) * 0.5f;
     }
 
-    private static void AppendCffGlyph(PathBuilder builder, CffTable cff, ushort glyphId, double glyphOriginX, double glyphOriginY, double scale, bool flipY)
+    private static void AppendCffGlyph(PathBuilder builder, CffTable cff, ushort glyphId, double glyphOriginX, double glyphOriginY, double scale)
     {
-        Type2BuildState state = new(builder, glyphOriginX, glyphOriginY, scale, flipY);
+        Type2BuildState state = new(builder, glyphOriginX, glyphOriginY, scale);
         Type2IlCompiler.CompileGlyph(cff, glyphId)(state);
         state.EnsureClosed();
     }
@@ -147,9 +138,7 @@ public static class ShapingResultPathExtensions
         this FontFace face,
         ushort glyphId,
         double fontSize,
-        Point origin,
-        bool isNonZeroFill = true,
-        bool flipY = true)
+        Point origin)
     {
         var builder = new PathBuilder();
 
@@ -175,23 +164,16 @@ public static class ShapingResultPathExtensions
                     contours[i].Points,
                     origin.X,
                     origin.Y,
-                    scale,
-                    flipY);
+                    scale);
             }
         }
         else if (hasCff && glyphId < cff.CharStrings.Length)
         {
-            AppendCffGlyph(builder, cff, glyphId, origin.X, origin.Y, scale, flipY);
+            AppendCffGlyph(builder, cff, glyphId, origin.X, origin.Y, scale);
         }
 
-        return builder.Build(isNonZeroFill);
+        return builder.Build(true);
     }
 
-    public static Path2D ToPath2D(
-        this FontFace face,
-        ushort glyphId,
-        double fontSize,
-        bool isNonZeroFill = true,
-        bool flipY = true)
-        => face.ToPath2D(glyphId, fontSize, Point.Zero, isNonZeroFill, flipY);
+    public static Path2D ToPath2D(this FontFace face, ushort glyphId, double fontSize) => face.ToPath2D(glyphId, fontSize, Point.Zero);
 }

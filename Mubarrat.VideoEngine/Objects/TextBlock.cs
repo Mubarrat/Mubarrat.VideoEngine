@@ -26,9 +26,6 @@ public sealed class TextBlock : FrameworkObject
     public IBrush Foreground { get => (IBrush)this[ForegroundProperty]; set => this[ForegroundProperty] = value; }
     public static readonly Property ForegroundProperty = new(nameof(Foreground), typeof(IBrush), new SolidColorBrush(0, 0, 0), AffectsArrange: true);
 
-    public bool IsNonZeroFill { get => (bool)this[IsNonZeroFillProperty]; set => this[IsNonZeroFillProperty] = value; }
-    public static readonly Property IsNonZeroFillProperty = new(nameof(IsNonZeroFill), typeof(bool), false, AffectsMeasure: true, AffectsArrange: true);
-
     public override Size OnMeasure(Size availableSize)
     {
         EnsureGeometry();
@@ -68,7 +65,7 @@ public sealed class TextBlock : FrameworkObject
     {
         base.OnPropertyChanged(property, oldValue, newValue);
 
-        if (property == TextProperty || property == FontFaceProperty || property == FontSizeProperty || property == IsNonZeroFillProperty)
+        if (property == TextProperty || property == FontFaceProperty || property == FontSizeProperty)
             _geometryVersion++;
     }
 
@@ -96,8 +93,7 @@ public sealed class TextBlock : FrameworkObject
 
             cachedPath = shaping.ToPath2D(
                 metrics.FontSize,
-                new Point(0, metrics.Ascent),
-                IsNonZeroFill);
+                new Point(0, metrics.Ascent));
 
             cachedBounds = cachedPath.Bounds.Normalized;
 

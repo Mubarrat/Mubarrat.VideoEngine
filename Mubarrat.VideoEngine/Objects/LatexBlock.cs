@@ -24,9 +24,6 @@ public sealed class LatexBlock : FrameworkObject
     public IBrush Foreground { get => (IBrush)this[ForegroundProperty]; set => this[ForegroundProperty] = value ?? throw new ArgumentNullException(nameof(value)); }
     public static readonly Property ForegroundProperty = new(nameof(Foreground), typeof(IBrush), new SolidColorBrush(0, 0, 0), AffectsArrange: true);
 
-    public bool IsNonZeroFill { get => (bool)this[IsNonZeroFillProperty]; set => this[IsNonZeroFillProperty] = value; }
-    public static readonly Property IsNonZeroFillProperty = new(nameof(IsNonZeroFill), typeof(bool), false, AffectsMeasure: true, AffectsArrange: true);
-
     public override Size OnMeasure(Size availableSize)
     {
         EnsureDrawing();
@@ -65,8 +62,7 @@ public sealed class LatexBlock : FrameworkObject
     {
         base.OnPropertyChanged(property, oldValue, newValue);
 
-        if (property == LatexProperty || property == FontFaceProperty || property == FontSizeProperty || property == ForegroundProperty ||
-            property == IsNonZeroFillProperty)
+        if (property == LatexProperty || property == FontFaceProperty || property == FontSizeProperty || property == ForegroundProperty)
         {
             renderVersion++;
         }

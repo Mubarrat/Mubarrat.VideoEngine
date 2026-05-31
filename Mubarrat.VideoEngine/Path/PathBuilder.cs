@@ -99,7 +99,8 @@ public class PathBuilder(IEnumerable<PathSegment> segs)
             return this;
 
         Point current = Segments[^1].Points[^1];
-        if (current != target)
+        const double closeTolerance = 0.01;
+        if (current.DistanceTo(target) > closeTolerance)
             Segments.Add(new LineSegment(target));
 
         return this;
@@ -243,29 +244,15 @@ public class PathBuilder(IEnumerable<PathSegment> segs)
 
                 case QuadraticSegment q:
                     {
-                        Point p0 = current, p1 = q.Control, p2 = q.End, prev = p0;
-                        int adaptiveSteps = Math.Clamp((int)Math.Ceiling(p2.DistanceTo(p0) * 0.25), 4, 1024);
-                        double invSteps = 1.0 / adaptiveSteps, t = invSteps;
-                        for (int s = 1; s <= adaptiveSteps; s++, t += invSteps)
-                        {
-                            double u = 1 - t;
-                            edges.Add(new Edge(prev, prev = p0 * (u * u) + (Vector2D)(p1 * (2 * u * t)) + (Vector2D)(p2 * (t * t)))); // Bernstein basis (optimized)
-                        }
-                        current = p2;
+                        FlattenQuadratic(current, q.Control, q.End, edges);
+                        current = q.End;
                         break;
                     }
 
                 case CubicSegment c:
                     {
-                        Point p0 = current, p1 = c.Control1, p2 = c.Control2, p3 = c.End, prev = p0;
-                        int adaptiveSteps = Math.Clamp((int)Math.Ceiling(p3.DistanceTo(p0) * 0.25), 4, 1024);
-                        double invSteps = 1.0 / adaptiveSteps, t = invSteps;
-                        for (int s = 1; s <= adaptiveSteps; s++, t += invSteps)
-                        {
-                            double u = 1 - t, uu = u * u, tt = t * t;
-                            edges.Add(new Edge(prev, prev = p0 * (uu * u) + (Vector2D)(p1 * (3 * uu * t)) + (Vector2D)(p2 * (3 * u * tt)) + (Vector2D)(p3 * (tt * t)))); // Expanded cubic Bernstein (no Pow)
-                        }
-                        current = p3;
+                        FlattenCubic(current, c.Control1, c.Control2, c.End, edges);
+                        current = c.End;
                         break;
                     }
             }
@@ -273,6 +260,97 @@ public class PathBuilder(IEnumerable<PathSegment> segs)
         if (edges.Count > 0)
             subpaths.Add(new Subpath([.. edges]));
         return new Path2D(isNonZeroFill, [.. subpaths]);
+    }
+
+    private static void FlattenQuadratic(Point p0, Point p1, Point p2, List<Edge> edges)
+        => FlattenQuadratic(p0, p1, p2, edges, 0);
+
+    private const double FlattenTolerance = 0.01;
+    private const int MaxFlattenDepth = 20;
+
+    private static void FlattenQuadratic(Point p0, Point p1, Point p2, List<Edge> edges, int depth)
+    {
+        if (depth >= MaxFlattenDepth || IsQuadraticFlatEnough(p0, p1, p2))
+        {
+            edges.Add(new Edge(p0, p2));
+            return;
+        }
+
+        var p01 = Midpoint(p0, p1);
+        var p12 = Midpoint(p1, p2);
+        var p012 = Midpoint(p01, p12);
+
+        FlattenQuadratic(p0, p01, p012, edges, depth + 1);
+        FlattenQuadratic(p012, p12, p2, edges, depth + 1);
+    }
+
+    private static void FlattenCubic(Point p0, Point p1, Point p2, Point p3, List<Edge> edges)
+        => FlattenCubic(p0, p1, p2, p3, edges, 0);
+
+    private static void FlattenCubic(Point p0, Point p1, Point p2, Point p3, List<Edge> edges, int depth)
+    {
+        if (depth >= MaxFlattenDepth || IsCubicFlatEnough(p0, p1, p2, p3))
+        {
+            edges.Add(new Edge(p0, p3));
+            return;
+        }
+
+        var p01 = Midpoint(p0, p1);
+        var p12 = Midpoint(p1, p2);
+        var p23 = Midpoint(p2, p3);
+        var p012 = Midpoint(p01, p12);
+        var p123 = Midpoint(p12, p23);
+        var p0123 = Midpoint(p012, p123);
+
+        FlattenCubic(p0, p01, p012, p0123, edges, depth + 1);
+        FlattenCubic(p0123, p123, p23, p3, edges, depth + 1);
+    }
+
+    private static Point Midpoint(in Point a, in Point b) => new((a.X + b.X) * 0.5, (a.Y + b.Y) * 0.5);
+
+    private static bool IsQuadraticFlatEnough(Point p0, Point p1, Point p2)
+    {
+        double chord = p0.DistanceTo(p2);
+        double midpointError = DistanceToLine(QuadraticPoint(p0, p1, p2, 0.5), p0, p2);
+        return DistanceToLine(p1, p0, p2) <= FlattenTolerance && midpointError <= FlattenTolerance && chord >= 0;
+    }
+
+    private static bool IsCubicFlatEnough(Point p0, Point p1, Point p2, Point p3)
+    {
+        double midpointError = DistanceToLine(CubicPoint(p0, p1, p2, p3, 0.5), p0, p3);
+        return Math.Max(DistanceToLine(p1, p0, p3), DistanceToLine(p2, p0, p3)) <= FlattenTolerance
+            && midpointError <= FlattenTolerance;
+    }
+
+    private static Point QuadraticPoint(Point p0, Point p1, Point p2, double t)
+    {
+        double u = 1 - t;
+        double x = (u * u * p0.X) + (2 * u * t * p1.X) + (t * t * p2.X);
+        double y = (u * u * p0.Y) + (2 * u * t * p1.Y) + (t * t * p2.Y);
+        return new Point(x, y);
+    }
+
+    private static Point CubicPoint(Point p0, Point p1, Point p2, Point p3, double t)
+    {
+        double u = 1 - t;
+        double uu = u * u;
+        double tt = t * t;
+        double x = (uu * u * p0.X) + (3 * uu * t * p1.X) + (3 * u * tt * p2.X) + (tt * t * p3.X);
+        double y = (uu * u * p0.Y) + (3 * uu * t * p1.Y) + (3 * u * tt * p2.Y) + (tt * t * p3.Y);
+        return new Point(x, y);
+    }
+
+    private static double DistanceToLine(Point p, Point a, Point b)
+    {
+        double dx = b.X - a.X;
+        double dy = b.Y - a.Y;
+
+        if (dx == 0 && dy == 0)
+            return p.DistanceTo(a);
+
+        double num = Math.Abs((p.X - a.X) * dy - (p.Y - a.Y) * dx);
+        double den = Math.Sqrt((dx * dx) + (dy * dy));
+        return num / den;
     }
 
     private static IEnumerable<CubicSegment> ArcToCubic(

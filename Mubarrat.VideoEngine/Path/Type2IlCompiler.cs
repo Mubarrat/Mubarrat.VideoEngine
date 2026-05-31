@@ -31,6 +31,12 @@ public static class Type2IlCompiler
     private static readonly MethodInfo EnsureClosedMethod =
         typeof(Type2BuildState).GetMethod(nameof(Type2BuildState.EnsureClosed), BindingFlags.Instance | BindingFlags.Public)!;
 
+    private static readonly MethodInfo AddHStemMethod =
+        typeof(Type2BuildState).GetMethod(nameof(Type2BuildState.AddHStem), BindingFlags.Instance | BindingFlags.Public)!;
+
+    private static readonly MethodInfo AddVStemMethod =
+        typeof(Type2BuildState).GetMethod(nameof(Type2BuildState.AddVStem), BindingFlags.Instance | BindingFlags.Public)!;
+
     public static Action<Type2BuildState> CompileGlyph(CffTable cff, ushort glyphId)
     {
         ArgumentNullException.ThrowIfNull(cff);
@@ -91,20 +97,20 @@ public static class Type2IlCompiler
 
             switch (op)
             {
-                case 1:
-                case 3:
-                case 18:
-                case 23:
-                    ConsumeWidthForHints(ref operands);
-                    hintCount += operands.Count >> 1;
-                    operands.Clear();
+                case 1: // hstem
+                case 18: // hstemhm
+                    EmitStemHints(il, ref operands, horizontal: true, ref hintCount);
                     break;
 
-                case 19:
-                case 20:
-                    ConsumeWidthForHints(ref operands);
-                    hintCount += operands.Count >> 1;
-                    operands.Clear();
+                case 3: // vstem
+                case 23: // vstemhm
+                    EmitStemHints(il, ref operands, horizontal: false, ref hintCount);
+                    break;
+
+                case 19: // hintmask
+                case 20: // cntrmask
+                    // Any operands before the mask are additional vstem hints.
+                    EmitStemHints(il, ref operands, horizontal: false, ref hintCount);
 
                     int hintMaskBytes = (hintCount + 7) >> 3;
                     if ((uint)hintMaskBytes > (uint)(program.Length - ip))
@@ -538,6 +544,40 @@ public static class Type2IlCompiler
         il.Emit(OpCodes.Call, CurveToRelativeMethod);
     }
 
+    private static void EmitStemHints(ILGenerator il, ref OperandBuffer operands, bool horizontal, ref int hintCount)
+    {
+        ConsumeWidthForHints(ref operands);
+
+        int count = operands.Count;
+        if (count == 0)
+            return;
+
+        RequireEvenCount(count, "Invalid stem hint operands.");
+
+        ReadOnlySpan<double> values = operands.AsSpan();
+        double position = 0;
+
+        for (int i = 0; i < count; i += 2)
+        {
+            position += values[i];
+            double width = values[i + 1];
+
+            EmitCallStem(il, horizontal, position, width);
+            position += width;
+            hintCount++;
+        }
+
+        operands.Clear();
+    }
+
+    private static void EmitCallStem(ILGenerator il, bool horizontal, double position, double width)
+    {
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Ldc_R8, position);
+        il.Emit(OpCodes.Ldc_R8, width);
+        il.Emit(OpCodes.Call, horizontal ? AddHStemMethod : AddVStemMethod);
+    }
+
     private static bool TryReadType2Number(ReadOnlySpan<byte> program, ref int ip, byte b0, out double value)
     {
         value = 0;
@@ -711,13 +751,17 @@ public static class Type2IlCompiler
     }
 }
 
-public sealed class Type2BuildState(PathBuilder builder, double glyphOriginX, double glyphOriginY, double scale, bool flipY)
+public sealed class Type2BuildState(PathBuilder builder, double glyphOriginX, double glyphOriginY, double scale)
 {
-    private readonly double yScale = scale * (flipY ? -1 : 1);
+    private readonly double yScale = scale * -1;
 
     private bool openContour;
     private double x;
     private double y;
+
+    public void AddHStem(double position, double width) { }
+
+    public void AddVStem(double position, double width) { }
 
     public void MoveToRelative(double dx, double dy)
     {

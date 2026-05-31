@@ -93,7 +93,7 @@ internal static class Helpers
             return new();
 
         if (!metrics.Face.Tables.TryGet(out MathTable math) || !math.MathVariants.VerticalGlyphCoverage.TryGetIndex(glyphId, out ushort index))
-            return metrics.Face.ToPath2D(glyphId, metrics.FontSize, false);
+            return metrics.Face.ToPath2D(glyphId, metrics.FontSize);
 
 
         ref var constructions = ref math.MathVariants.VerticalConstructions[index];
@@ -101,7 +101,7 @@ internal static class Helpers
         foreach (ref var variant in constructions.Variants.AsSpan())
         {
             if (variant.AdvanceMeasurement * metrics.Scale >= targetHeight)
-                return metrics.Face.ToPath2D(variant.VariantGlyph, metrics.FontSize, false);
+                return metrics.Face.ToPath2D(variant.VariantGlyph, metrics.FontSize);
         }
 
         var _ = 0d;
@@ -111,7 +111,7 @@ internal static class Helpers
         {
             var parts = enumerable.ToArray();
             Array.Reverse(parts);
-            var paths = Array.ConvertAll(parts, p => metrics.Face.ToPath2D(p.GlyphId, metrics.FontSize, false));
+            var paths = Array.ConvertAll(parts, p => metrics.Face.ToPath2D(p.GlyphId, metrics.FontSize));
             var totalHeight = paths.Sum(x => x.Bounds.Height);
             var toCollapsePerPart = (totalHeight - finalHeight) / (parts.Length - 1);
             double y = 0;
