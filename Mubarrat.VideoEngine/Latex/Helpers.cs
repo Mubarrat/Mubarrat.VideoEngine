@@ -1,6 +1,6 @@
 ﻿using Mubarrat.OpenType;
 using Mubarrat.OpenType.Tables;
-using Mubarrat.VideoEngine.Immutable;
+using Mubarrat.VideoEngine.Fields2D;
 using Mubarrat.VideoEngine.Path;
 
 namespace Mubarrat.VideoEngine.Latex;
@@ -90,7 +90,7 @@ internal static class Helpers
     public static Path2D GetVerticalGlyph(char character, FontMetrics metrics, double targetHeight)
     {
         if (!metrics.Face.Tables.TryGet(out CmapTable cmap) || !cmap.TryGetGlyphId(character, out ushort glyphId))
-            return new();
+            return Path2D.Empty;
 
         if (!metrics.Face.Tables.TryGet(out MathTable math) || !math.MathVariants.VerticalGlyphCoverage.TryGetIndex(glyphId, out ushort index))
             return metrics.Face.ToPath2D(glyphId, metrics.FontSize);
@@ -111,7 +111,7 @@ internal static class Helpers
         {
             var parts = enumerable.ToArray();
             Array.Reverse(parts);
-            var paths = Array.ConvertAll(parts, p => metrics.Face.ToPath2D(p.GlyphId, metrics.FontSize));
+            var paths = Array.ConvertAll(parts, p => (Path2D)metrics.Face.ToPath2D(p.GlyphId, metrics.FontSize));
             var totalHeight = paths.Sum(x => x.Bounds.Height);
             var toCollapsePerPart = (totalHeight - finalHeight) / (parts.Length - 1);
             double y = 0;
@@ -120,10 +120,10 @@ internal static class Helpers
                 paths[i] *= Matrix2D.Translate(0, y - paths[i].Bounds.Y);
                 y += paths[i].Bounds.Height - toCollapsePerPart;
             }
-            return Path2D.Combine(paths);
+            return new Path2D(FillRule.NonZero, paths.SelectMany(p => p).ToArray());
         }
 
-        return new();
+        return Path2D.Empty;
     }
 
     // smallest possible size
@@ -145,3 +145,7 @@ internal static class Helpers
     public static double SumWithMinimumOverlap(IEnumerable<MathTable.GlyphPart> parts, int count, double minimumOverlap)
         => parts.Sum(x => x.FullAdvance) - Math.Max(0, count - 1) * minimumOverlap;
 }
+
+
+
+

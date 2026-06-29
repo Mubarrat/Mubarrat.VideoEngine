@@ -72,7 +72,7 @@ public sealed class RadicalMathAtom(MathAtom radicand, MathAtom? degree) : MathA
         {
             Path = PathBuilder.Rectangle(
                 new(new(Radicand.X - MathTable.MathVariants.MinConnectorOverlap * metrics.Scale, Height - RadicalHeight),
-                new Point(Radicand.Bounds.Right, Height - RadicalHeight + rule))).Build()
+                new Point(Radicand.Bounds.Right, Height - RadicalHeight + rule))).BuildPath()
         });
         var path2D = Helpers.GetVerticalGlyph('√', metrics, RadicalHeight);
         Rect bounds = path2D.Bounds;

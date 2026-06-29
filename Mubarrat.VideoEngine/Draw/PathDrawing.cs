@@ -1,12 +1,13 @@
-﻿using Mubarrat.VideoEngine.Immutable;
+﻿using Mubarrat.VideoEngine.Fields2D;
 using Mubarrat.VideoEngine.Objects;
+using Mubarrat.VideoEngine.Path;
 
 namespace Mubarrat.VideoEngine.Draw;
 
 public sealed class PathDrawing : Drawing
 {
     public Path2D Path { get => (Path2D)this[PathProperty]; set => this[PathProperty] = value; }
-    public static readonly Property PathProperty = new(nameof(Path), typeof(Path2D), DefaultValue: null);
+    public static readonly Property PathProperty = new(nameof(Path), typeof(Path2D), DefaultValue: Path2D.Empty);
 
     public override Rect Bounds => Path.Bounds.Inflate(Stroke.Thickness / 2, Stroke.Thickness / 2) * Transform;
 

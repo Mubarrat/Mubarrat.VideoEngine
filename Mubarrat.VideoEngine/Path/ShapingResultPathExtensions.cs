@@ -1,7 +1,7 @@
-using Mubarrat.OpenType;
+﻿using Mubarrat.OpenType;
 using Mubarrat.OpenType.Tables;
 using Mubarrat.OpenType.TextShaping;
-using Mubarrat.VideoEngine.Immutable;
+using Mubarrat.VideoEngine.Fields2D;
 using System.Numerics;
 
 namespace Mubarrat.VideoEngine.Path;
@@ -65,12 +65,12 @@ public static class ShapingResultPathExtensions
     /// <summary>
     /// Converts a shaped text run to <see cref="Path2D"/> through <see cref="PathBuilder"/>.
     /// </summary>
-    public static Path2D ToPath2D(this ShapingResult shapingResult, double fontSize, Point origin) => shapingResult.ToPathBuilder(fontSize, origin).Build(true);
+    public static Path2D ToPath2D(this ShapingResult shapingResult, double fontSize, Point origin) => shapingResult.ToPathBuilder(fontSize, origin).BuildPath(true);
 
     /// <summary>
     /// Converts a shaped text run to <see cref="Path2D"/> through <see cref="PathBuilder"/> using origin (0,0).
     /// </summary>
-    public static Path2D ToPath2D(this ShapingResult shapingResult, double fontSize) => shapingResult.ToPathBuilder(fontSize, Point.Zero).Build(true);
+    public static Path2D ToPath2D(this ShapingResult shapingResult, double fontSize) => shapingResult.ToPathBuilder(fontSize, Point.Zero).BuildPath(true);
 
     private static void AppendContour(PathBuilder builder, GlyfTable.GlyphOutlinePoint[] contour, double glyphOriginX, double glyphOriginY, double scale)
     {
@@ -172,8 +172,10 @@ public static class ShapingResultPathExtensions
             AppendCffGlyph(builder, cff, glyphId, origin.X, origin.Y, scale);
         }
 
-        return builder.Build(true);
+        return builder.BuildPath(true);
     }
 
     public static Path2D ToPath2D(this FontFace face, ushort glyphId, double fontSize) => face.ToPath2D(glyphId, fontSize, Point.Zero);
 }
+
+

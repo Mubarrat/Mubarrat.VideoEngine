@@ -98,21 +98,22 @@ public class Video
                     byte* framePtr = chunkBuffer + (ulong)workerId * frameSize;
                     NativeMemory.Clear(framePtr, frameSize);
 
-                    try
-                    {
+                    //try
+                    //{
                         FrameSource.RenderFrame(j, (Color32*)framePtr, Width, Height);
 
                         if (workerId == framesPerChunk - 1)
                             Log("Renderer", ConsoleColor.Cyan, $"Rendered frame {j + 1}/{TotalFrames}");
-                    }
-                    catch (Exception ex)
-                    {
-                        if (Debugger.IsAttached)
-                            Debugger.Break();
+                    //}
+                    //catch (Exception ex)
+                    //{
+                    //    //if (Debugger.IsAttached)
+                    //    //    Debugger.Break();
 
-                        exceptions.Add(ex);
-                        Log("Renderer", ConsoleColor.Red, $"Failed frame {j + 1}/{TotalFrames}");
-                    }
+                    //    //exceptions.Add(ex);
+                    //    Log("Renderer", ConsoleColor.Red, $"Failed frame {j + 1}/{TotalFrames}");
+                    //    throw ex;
+                    //}
 
                     producerEvents[workerId].Set();
                     consumerEvents[workerId].Reset();

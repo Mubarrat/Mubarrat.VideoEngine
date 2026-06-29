@@ -60,7 +60,7 @@ public sealed class FractionMathAtom(MathAtom numerator, MathAtom denominator) :
         var rule = c.FractionRuleThickness * m.Scale;
 
         var drawing = (GroupDrawing)base.OnDraw();
-        drawing.Drawings.Add(new PathDrawing { Path = PathBuilder.Rectangle(new(0, Baseline - c.AxisHeight * m.Scale - rule / 2, Width, rule)).Build() });
+        drawing.Drawings.Add(new PathDrawing { Path = PathBuilder.Rectangle(new(0, Baseline - c.AxisHeight * m.Scale - rule / 2, Width, rule)).BuildPath() });
         return drawing;
     }
 }

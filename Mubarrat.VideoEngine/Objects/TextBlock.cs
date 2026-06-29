@@ -1,7 +1,7 @@
-using Mubarrat.OpenType;
+﻿using Mubarrat.OpenType;
 using Mubarrat.OpenType.TextShaping;
 using Mubarrat.VideoEngine.Draw;
-using Mubarrat.VideoEngine.Immutable;
+using Mubarrat.VideoEngine.Fields2D;
 using Mubarrat.VideoEngine.Path;
 
 namespace Mubarrat.VideoEngine.Objects;
@@ -25,6 +25,9 @@ public sealed class TextBlock : FrameworkObject
 
     public IBrush Foreground { get => (IBrush)this[ForegroundProperty]; set => this[ForegroundProperty] = value; }
     public static readonly Property ForegroundProperty = new(nameof(Foreground), typeof(IBrush), new SolidColorBrush(0, 0, 0), AffectsArrange: true);
+
+    public Pen Stroke { get => (Pen)this[StrokeProperty]; set => this[StrokeProperty] = value; }
+    public static readonly Property StrokeProperty = new(nameof(Stroke), typeof(Pen), new Pen(), AffectsMeasure: true, AffectsArrange: true);
 
     public override Size OnMeasure(Size availableSize)
     {
@@ -54,7 +57,7 @@ public sealed class TextBlock : FrameworkObject
         {
             Path = cachedPath,
             Fill = Foreground,
-            Stroke = default,
+            Stroke = Stroke,
             Transform = LayoutTransform * RenderTransform,
             Opacity = Opacity,
             Name = Name
@@ -101,3 +104,5 @@ public sealed class TextBlock : FrameworkObject
         }
     }
 }
+
+

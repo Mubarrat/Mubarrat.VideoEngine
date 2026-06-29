@@ -21,13 +21,13 @@ public class Border : FrameworkObject
 
     public static readonly Property BackgroundProperty = new(nameof(Background), typeof(IBrush), AffectsArrange: true);
 
-    public Pen BorderPen
+    public Pen Stroke
     {
-        get => (Pen)this[BorderProperty];
-        set => this[BorderProperty] = value;
+        get => (Pen)this[StrokeProperty];
+        set => this[StrokeProperty] = value;
     }
 
-    public static readonly Property BorderProperty = new(nameof(Border), typeof(Pen), new Pen(), AffectsMeasure: true, AffectsArrange: true);
+    public static readonly Property StrokeProperty = new(nameof(Stroke), typeof(Pen), new Pen(), AffectsMeasure: true, AffectsArrange: true);
 
     public double CornerRadius
     {
@@ -78,7 +78,7 @@ public class Border : FrameworkObject
         var drawings = new List<Drawing>(2);
         double width = ActualBounds.Width;
         double height = ActualBounds.Height;
-        var border = BorderPen;
+        var border = Stroke;
         double thickness = Math.Max(0, border.Thickness);
         double radius = CornerRadius;
 
@@ -98,7 +98,7 @@ public class Border : FrameworkObject
             {
                 drawings.Add(new PathDrawing
                 {
-                    Path = BuildRectPath(rect, Math.Max(0, radius - inset)).Build(),
+                    Path = BuildRectPath(rect, Math.Max(0, radius - inset)).BuildPath(),
                     Fill = hasFill ? Background! : null!,
                     Stroke = hasStroke ? border : default,
                     Name = Name
@@ -121,6 +121,6 @@ public class Border : FrameworkObject
     private static PathBuilder BuildRectPath(Rect rect, double radius)
         => radius > 0 ? PathBuilder.RoundedRectangle(rect, radius) : PathBuilder.Rectangle(rect);
 
-    private double HorizontalContentInset => Math.Max(0, BorderPen.Thickness) + Padding.Horizontal;
-    private double VerticalContentInset => Math.Max(0, BorderPen.Thickness) + Padding.Vertical;
+    private double HorizontalContentInset => Math.Max(0, Stroke.Thickness) + Padding.Horizontal;
+    private double VerticalContentInset => Math.Max(0, Stroke.Thickness) + Padding.Vertical;
 }

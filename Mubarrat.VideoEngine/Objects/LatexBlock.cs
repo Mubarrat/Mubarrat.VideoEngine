@@ -96,7 +96,7 @@ public sealed class LatexBlock : FrameworkObject
             cachedDrawing = atom.OnDraw();
             cachedDrawing.Fill = Foreground;
             cachedBounds = atom.Size.Width > 0 || atom.Size.Height > 0
-                ? new Rect(atom.Location, atom.Size)
+                ? atom.Bounds
                 : (cachedDrawing?.Bounds ?? Rect.NaN);
             cachedRenderVersion = renderVersion;
         }

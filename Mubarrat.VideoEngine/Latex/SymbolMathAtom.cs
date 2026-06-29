@@ -1,4 +1,4 @@
-using Mubarrat.OpenType.TextShaping;
+﻿using Mubarrat.OpenType.TextShaping;
 using Mubarrat.VideoEngine.Draw;
 using Mubarrat.VideoEngine.Path;
 
@@ -43,3 +43,4 @@ public sealed class SymbolMathAtom(string text = "") : MathAtom
         return (ExtraFeatures ?? []).Concat(Style is MathStyle.Script ? ["ssty1"] : Style is MathStyle.ScriptScript ? ["ssty2"] : []).ToArray();
     }
 }
+

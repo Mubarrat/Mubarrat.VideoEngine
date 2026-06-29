@@ -25,7 +25,7 @@ public abstract class Panel : FrameworkObject
         {
             drawings.Add(new PathDrawing
             {
-                Path = PathBuilder.Rectangle(new Rect(0, 0, ActualBounds.Width, ActualBounds.Height)).Build(),
+                Path = PathBuilder.Rectangle(new Rect(0, 0, ActualBounds.Width, ActualBounds.Height)).BuildPath(),
                 Fill = Background,
                 Stroke = default
             });

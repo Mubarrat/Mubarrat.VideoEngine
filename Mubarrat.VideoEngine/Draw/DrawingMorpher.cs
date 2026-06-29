@@ -1,4 +1,5 @@
-using Mubarrat.VideoEngine.Immutable;
+﻿using Mubarrat.VideoEngine.Fields2D;
+using Mubarrat.VideoEngine.Path;
 using System.Runtime.CompilerServices;
 
 namespace Mubarrat.VideoEngine.Draw;
@@ -347,7 +348,7 @@ internal static class DrawingMorpher
     {
         var drawing = new PathDrawing
         {
-            Path = new Path2D(true),
+            Path = Path2D.Empty,
             Fill = null!,
             Stroke = default,
             Transform = Matrix2D.Scale(0, 0, reference.Center),
@@ -526,3 +527,4 @@ internal static class DrawingMorpher
         }
     }
 }
+

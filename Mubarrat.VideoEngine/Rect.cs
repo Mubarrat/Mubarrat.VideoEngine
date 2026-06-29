@@ -53,10 +53,42 @@ public record struct Rect(
         return new Rect(Point.Min(self.TopLeft, other.TopLeft), Point.Max(self.BottomRight, other.BottomRight));
     }
 
+    public static Rect Union(Rect a, Rect b)
+    {
+        a = a.Normalized; b = b.Normalized;
+        return new Rect(Point.Min(a.TopLeft, b.TopLeft), Point.Max(a.BottomRight, b.BottomRight));
+    }
+
+    public static Rect Union(IEnumerable<Rect> rects) => rects.Any() ? rects.Aggregate(Union) : NaN;
+    public static Rect Union(params ReadOnlySpan<Rect> rects)
+    {
+        if (rects.Length == 0) return NaN;
+        Rect result = rects[0];
+        for (int i = 1; i < rects.Length; i++)
+            result = Union(result, rects[i]);
+        return result;
+    }
+
     public readonly Rect Intersection(Rect other)
     {
         Rect self = Normalized; other = other.Normalized;
         return new Rect(Point.Max(self.TopLeft, other.TopLeft), Point.Min(self.BottomRight, other.BottomRight));
+    }
+
+    public static Rect Intersection(Rect a, Rect b)
+    {
+        a = a.Normalized; b = b.Normalized;
+        return new Rect(Point.Max(a.TopLeft, b.TopLeft), Point.Min(a.BottomRight, b.BottomRight));
+    }
+
+    public static Rect Intersection(IEnumerable<Rect> rects) => rects.Any() ? rects.Aggregate(Intersection) : NaN;
+    public static Rect Intersection(params ReadOnlySpan<Rect> rects)
+    {
+        if (rects.Length == 0) return NaN;
+        Rect result = rects[0];
+        for (int i = 1; i < rects.Length; i++)
+            result = Intersection(result, rects[i]);
+        return result;
     }
 
     public override readonly string ToString() => $"Rect({X}, {Y}, {Width}, {Height})";
