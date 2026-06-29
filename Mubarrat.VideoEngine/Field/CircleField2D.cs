@@ -1,4 +1,4 @@
-﻿namespace Mubarrat.VideoEngine.Fields2D;
+﻿namespace Mubarrat.VideoEngine.Field;
 
 public class CircleField2D : Field2D, ISignedDistanceField2D, IIntervalField2D, ICoverageField2D, IGradientField2D
 {

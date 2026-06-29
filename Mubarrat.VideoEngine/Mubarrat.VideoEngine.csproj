@@ -8,15 +8,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Remove="Fields\**" />
-    <Compile Remove="Immutable\**" />
-    <EmbeddedResource Remove="Fields\**" />
-    <EmbeddedResource Remove="Immutable\**" />
-    <None Remove="Fields\**" />
-    <None Remove="Immutable\**" />
-  </ItemGroup>
-
-  <ItemGroup>
     <PackageReference Include="FFmpeg.AutoGen" Version="8.1.0" />
     <PackageReference Include="StbImageSharp" Version="2.30.15" />
   </ItemGroup>
@@ -31,6 +22,5 @@
 		  <TargetPath>%(Filename)%(Extension)</TargetPath>
 	  </None>
   </ItemGroup>
-
 
 </Project>

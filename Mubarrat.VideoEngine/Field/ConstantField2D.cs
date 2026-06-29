@@ -1,4 +1,4 @@
-﻿namespace Mubarrat.VideoEngine.Fields2D;
+﻿namespace Mubarrat.VideoEngine.Field;
 
 public class ConstantField2D(double value) : Field2D, IIntervalField2D, ICoverageField2D
 {

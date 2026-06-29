@@ -1,7 +1,6 @@
 ﻿using Mubarrat.OpenType;
 using Mubarrat.OpenType.TextShaping;
 using Mubarrat.VideoEngine.Draw;
-using Mubarrat.VideoEngine.Fields2D;
 using Mubarrat.VideoEngine.Path;
 
 namespace Mubarrat.VideoEngine.Objects;

@@ -1,5 +1,4 @@
-﻿using Mubarrat.VideoEngine.Fields2D;
-using Mubarrat.VideoEngine.Path;
+﻿using Mubarrat.VideoEngine.Path;
 using System.Runtime.CompilerServices;
 
 namespace Mubarrat.VideoEngine.Draw;

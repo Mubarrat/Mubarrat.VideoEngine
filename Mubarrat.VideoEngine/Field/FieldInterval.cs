@@ -1,4 +1,4 @@
-﻿namespace Mubarrat.VideoEngine.Fields2D;
+﻿namespace Mubarrat.VideoEngine.Field;
 
 public readonly struct FieldInterval(double min, double max)
 {

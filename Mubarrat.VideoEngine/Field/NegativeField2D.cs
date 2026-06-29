@@ -1,4 +1,4 @@
-﻿namespace Mubarrat.VideoEngine.Fields2D;
+﻿namespace Mubarrat.VideoEngine.Field;
 
 public class NegativeField2D(Field2D child) : Field2D, IUnaryField2D, IIntervalField2D, ICoverageField2D
 {

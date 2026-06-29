@@ -1,4 +1,4 @@
-﻿namespace Mubarrat.VideoEngine.Fields2D;
+﻿namespace Mubarrat.VideoEngine.Field;
 
 public class LineSegmentField2D(Point start, Point end) : Field2D, ISignedDistanceField2D, IIntervalField2D, ICoverageField2D
 {

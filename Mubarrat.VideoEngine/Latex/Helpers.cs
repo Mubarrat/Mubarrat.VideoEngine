@@ -1,6 +1,5 @@
 ﻿using Mubarrat.OpenType;
 using Mubarrat.OpenType.Tables;
-using Mubarrat.VideoEngine.Fields2D;
 using Mubarrat.VideoEngine.Path;
 
 namespace Mubarrat.VideoEngine.Latex;

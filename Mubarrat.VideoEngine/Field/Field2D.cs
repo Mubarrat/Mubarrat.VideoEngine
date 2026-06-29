@@ -1,4 +1,4 @@
-﻿namespace Mubarrat.VideoEngine.Fields2D;
+﻿namespace Mubarrat.VideoEngine.Field;
 
 /// <summary>
 /// Marks a field that can be evaluated in 2D space. This interface defines the basic functionality for any 2D field, including evaluation at specific points and retrieving the field's bounds.

@@ -1,6 +1,6 @@
 ﻿using System.Runtime.CompilerServices;
 
-namespace Mubarrat.VideoEngine.Fields2D;
+namespace Mubarrat.VideoEngine.Field;
 
 public class LerpField2D(Field2D a, Field2D b, double t) : Field2D, ISignedDistanceField2D, IIntervalField2D, ICoverageField2D, IGradientField2D
 {

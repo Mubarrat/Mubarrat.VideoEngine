@@ -1,4 +1,4 @@
-﻿namespace Mubarrat.VideoEngine.Fields2D;
+﻿namespace Mubarrat.VideoEngine.Field;
 
 public class MinField2D : Field2D, IBinaryField2D, IIntervalField2D, ICoverageField2D
 {
