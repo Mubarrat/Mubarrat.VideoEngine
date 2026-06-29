@@ -20,10 +20,10 @@ namespace Mubarrat.VideoEngine.Draw;
 //   • Exact per-row edge splitting — dy is distributed across crossed cells.
 //   • Resolve: alpha = FillRule(running × 2×Sub − area[x]) / (2×Sub²).
 //
-// STROKE: 4×MSAA, analytically correct per-sample hit test.
+// STROKE: Analytic outline fill from flattened segments.
 //   • Same adaptive flattening pipeline.
-//   • Sampling-bounds constants hoisted outside inner pixel loop.
-//   • Dashed strokes supported.
+//   • Caps, joins, and dashes are emitted as fillable contours.
+//   • The fill rasterizer handles AA, so stroke stays branch-light.
 // ─────────────────────────────────────────────────────────────────────────────
 public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ushort height) : IRenderer
 {
@@ -39,28 +39,26 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
     // Adaptive flattening tolerance (squared, for cheap distance test)
     private const double FlatTol2 = 0.25 * 0.25;
 
-    private const float SampleW = 0.25f;   // 1/4 weight per MSAA sample
-    private const double MiterLim = 4.0;
+    private const double MiterLim = 10.0;
 
     // ── State stacks ──────────────────────────────────────────────────────────
-    private readonly Stack<(Matrix2D Transform, double Opacity, InheritedPaintState Paint)> stateStack = new();
+    private readonly Stack<(Matrix2D Transform, double Opacity)> stateStack = new();
     private readonly Stack<InheritedPaintState> paintStack = new();
 
-    private (Matrix2D Transform, double Opacity, InheritedPaintState Paint) CurrentState =>
-        stateStack.Count > 0 ? stateStack.Peek() : (Matrix2D.Identity, 1, new(null, default, Rect.NaN));
+    private (Matrix2D Transform, double Opacity) CurrentState =>
+        stateStack.Count > 0 ? stateStack.Peek() : (Matrix2D.Identity, 1);
 
     private InheritedPaintState CurrentPaint =>
         paintStack.Count > 0 ? paintStack.Peek() : new(null, default, Rect.NaN);
 
-    public void PushTransform(Matrix2D transform) => PushState(transform, 1, new(null, default, Rect.NaN));
-    public void PushOpacity(double opacity) => PushState(Matrix2D.Identity, opacity, new(null, default, Rect.NaN));
-    internal void PushPaint(InheritedPaintState paint) => PushState(Matrix2D.Identity, 1, paint);
+    public void PushTransform(Matrix2D transform) => PushState(transform, 1);
+    public void PushOpacity(double opacity) => PushState(Matrix2D.Identity, opacity);
 
-    internal void PushState(Matrix2D transform, double opacity, InheritedPaintState paint)
+    internal void PushState(Matrix2D transform, double opacity)
     {
         opacity = double.Clamp(opacity, 0, 1);
-        var (ct, co, _) = CurrentState;
-        stateStack.Push((transform * ct, co * opacity, paint));
+        var (ct, co) = CurrentState;
+        stateStack.Push((transform * ct, co * opacity));
     }
 
     public void Pop() => stateStack.TryPop(out _);
@@ -78,7 +76,7 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
                     Pen es = pd.Stroke.Brush is null ? ip.Stroke : pd.Stroke;
                     Rect? fb = pd.Fill is null ? NormalizeRectOrNull(ip.ScopeBounds) : null;
                     Rect? sb = pd.Stroke.Brush is null ? NormalizeRectOrNull(ip.ScopeBounds) : null;
-                    PushState(pd.Transform, pd.Opacity, new(null, default, Rect.NaN));
+                    PushState(pd.Transform, pd.Opacity);
                     try { DrawPath(pd.Path * CurrentState.Transform, ef, es, fb, sb); }
                     finally { Pop(); }
                     break;
@@ -91,7 +89,7 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
                     Rect sc = (gd.Bounds * CurrentState.Transform).Normalized;
                     if (!IsFiniteRect(sc)) sc = pp.ScopeBounds;
                     paintStack.Push(new InheritedPaintState(gf, gs, sc));
-                    PushState(gd.Transform, gd.Opacity, new(null, default, Rect.NaN));
+                    PushState(gd.Transform, gd.Opacity);
                     try { gd.Drawings.ForEach(Draw); }
                     finally { Pop(); paintStack.Pop(); }
                     break;
@@ -107,7 +105,7 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
         Rect? fillSamplingBounds = null, Rect? strokeSamplingBounds = null)
     {
         if (path.Count == 0) return;
-        var (_, opacityD, _) = CurrentState;
+        var (_, opacityD) = CurrentState;
         int w = width, h = height;
         if (w == 0 || h == 0) return;
 
@@ -529,58 +527,86 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
         }
     }
 
-    // =========================================================================
-    //  STROKE RASTERIZER  (4×MSAA)
-    //
-    //  Same adaptive flattening as fill.
-    //  For each PathContour, collects flat line segments, draws each with
-    //  DrawStrokeSegment, then draws joins between consecutive valid segments.
-    //  Dashed strokes walk each flat segment with dashRemaining tracking.
-    // =========================================================================
     private void StrokePass(
         Path2D path, Pen stroke, float opacity,
         int w, int h, Rect samplingBounds)
     {
+        if (!double.IsFinite(stroke.Thickness) || stroke.Thickness <= 0 || path.Count == 0) return;
+
         double radius = stroke.Thickness * 0.5;
-        double r2 = radius * radius;
-        double sl = samplingBounds.Left, st = samplingBounds.Top;
-        double sw = samplingBounds.Width, sh = samplingBounds.Height;
-        double isw = sw > 1e-9 ? 1.0 / sw : 1.0 / w;
-        double ish = sh > 1e-9 ? 1.0 / sh : 1.0 / h;
-        double[]? dash = stroke.DashPattern;
-        bool useDash = dash is { Length: > 0 };
+        double dashScale = stroke.Thickness;
+        double miterLimit = double.IsFinite(stroke.MiterLimit) && stroke.MiterLimit > 0 ? stroke.MiterLimit : MiterLim;
+
+        DashPattern dash = stroke.DashPattern;
+        bool useDash = TryInitializeDash(dash, dashScale, stroke.DashOffset, out int dashIdx, out bool dashOn, out double dashRem);
+        var strokeContours = new List<PathContour>(Math.Max(8, path.Count * 8));
 
         foreach (PathContour contour in path)
         {
-            // Collect flat line segments; draw each immediately
-            // and record info for join drawing afterward.
-            var segs = new List<StrokeSeg>(contour.Count * 2);
+            var segs = new List<StrokeSeg>(Math.Max(4, contour.Count * 2));
+            int firstValid = -1;
+            int lastValid = -1;
 
-            int dashIdx = 0;
-            double dashRem = useDash ? dash![0] * stroke.Thickness : 0;
-            bool dashOn = true;
+            void EmitBody(Point start, Point end, Vector2D tangent)
+            {
+                Vector2D normal = new(-tangent.Y, tangent.X);
+                AddStrokeSegmentContour(strokeContours, start, end, normal, radius);
+            }
+
+            void EmitDashPiece(Point start, Point end, Vector2D tangent)
+            {
+                Vector2D normal = new(-tangent.Y, tangent.X);
+                AddStrokeSegmentContour(strokeContours, start, end, normal, radius);
+                AddCapContour(strokeContours, start, tangent, normal, radius, stroke.Cap, true);
+                AddCapContour(strokeContours, end, tangent, normal, radius, stroke.Cap, false);
+            }
 
             void Emit(double ax, double ay, double bx, double by)
             {
                 double dx = bx - ax, dy = by - ay, len = Math.Sqrt(dx * dx + dy * dy);
                 if (len < 1e-10)
                 {
-                    DrawStrokePoint(w, h, ax, ay, radius, r2, stroke, sl, st, isw, ish, opacity);
+                    AddCircleContour(strokeContours, new Point(ax, ay), radius);
                     segs.Add(new(ax, ay, bx, by, 0, 0, false));
                     return;
                 }
+
                 double ux = dx / len, uy = dy / len;
-                if (!useDash)
+                Point start = new(ax, ay);
+                Point end = new(bx, by);
+                Vector2D tangent = new(ux, uy);
+
+                if (useDash)
                 {
-                    DrawStrokeSegment(w, h, ax, ay, bx, by, ux, uy, len,
-                        radius, r2, stroke, sl, st, isw, ish, opacity);
+                    double consumed = 0;
+                    while (consumed < len)
+                    {
+                        if (dashRem <= 1e-12)
+                        {
+                            if (!AdvanceDash(dash, dashScale, ref dashIdx, ref dashOn, ref dashRem))
+                                break;
+                        }
+
+                        double step = Math.Min(dashRem, len - consumed);
+                        if (dashOn)
+                        {
+                            double t0 = consumed / len, t1 = (consumed + step) / len;
+                            Point pieceStart = new(start.X + dx * t0, start.Y + dy * t0);
+                            Point pieceEnd = new(start.X + dx * t1, start.Y + dy * t1);
+                            EmitDashPiece(pieceStart, pieceEnd, tangent);
+                        }
+
+                        consumed += step;
+                        dashRem -= step;
+                    }
                 }
                 else
                 {
-                    DrawDashedSegment(w, h, ax, ay, bx, by, dx, dy, ux, uy, len,
-                        radius, r2, stroke, sl, st, isw, ish, opacity, dash!,
-                        ref dashIdx, ref dashRem, ref dashOn);
+                    EmitBody(start, end, tangent);
+                    if (firstValid < 0) firstValid = segs.Count;
+                    lastValid = segs.Count;
                 }
+
                 segs.Add(new(ax, ay, bx, by, ux, uy, true));
             }
 
@@ -630,239 +656,47 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
             {
                 switch (seg)
                 {
-                    case LineSegment l: Emit(l.Start.X, l.Start.Y, l.End.X, l.End.Y); break;
-                    case QuadraticSegment q: FlatQ(q.Start.X, q.Start.Y, q.Control.X, q.Control.Y, q.End.X, q.End.Y); break;
-                    case CubicSegment c: FlatC(c.Start.X, c.Start.Y, c.Control1.X, c.Control1.Y, c.Control2.X, c.Control2.Y, c.End.X, c.End.Y); break;
+                    case LineSegment l:
+                        Emit(l.Start.X, l.Start.Y, l.End.X, l.End.Y);
+                        break;
+                    case QuadraticSegment q:
+                        FlatQ(q.Start.X, q.Start.Y, q.Control.X, q.Control.Y, q.End.X, q.End.Y);
+                        break;
+                    case CubicSegment c:
+                        FlatC(c.Start.X, c.Start.Y,
+                              c.Control1.X, c.Control1.Y,
+                              c.Control2.X, c.Control2.Y,
+                              c.End.X, c.End.Y);
+                        break;
                 }
             }
 
-            // Draw joins between consecutive valid segments
-            int n = segs.Count;
-            bool closed = contour.IsClosed;
-            int joins = closed ? n : n - 1;
-            for (int i = 0; i < joins; i++)
+            if (!useDash && !contour.IsClosed && firstValid >= 0)
             {
-                var cur = segs[i]; var nxt = segs[(i + 1) % n];
-                if (!cur.Valid || !nxt.Valid) continue;
-                if (!NearlyEq(cur.X2, nxt.X1) || !NearlyEq(cur.Y2, nxt.Y1)) continue;
-                DrawStrokeJoin(w, h, nxt.X1, nxt.Y1,
-                    cur.Ux, cur.Uy, nxt.Ux, nxt.Uy,
-                    radius, r2, stroke, sl, st, isw, ish, opacity);
+                var first = segs[firstValid];
+                var last = segs[lastValid];
+                AddCapContour(strokeContours, new Point(first.X1, first.Y1), new Vector2D(first.Ux, first.Uy), new Vector2D(-first.Uy, first.Ux), radius, stroke.Cap, true);
+                AddCapContour(strokeContours, new Point(last.X2, last.Y2), new Vector2D(last.Ux, last.Uy), new Vector2D(-last.Uy, last.Ux), radius, stroke.Cap, false);
             }
-        }
-    }
 
-    private void DrawDashedSegment(
-        int w, int h, double ax, double ay, double bx, double by,
-        double dx, double dy, double ux, double uy, double len,
-        double radius, double r2, Pen stroke,
-        double sl, double st, double isw, double ish, double opacity,
-        double[] dash, ref int dashIdx, ref double dashRem, ref bool dashOn)
-    {
-        double consumed = 0;
-        while (consumed < len)
-        {
-            if (dashRem <= 0)
+            if (!useDash)
             {
-                dashIdx = (dashIdx + 1) % dash.Length;
-                dashRem = dash[dashIdx] * stroke.Thickness;
-                if (dashRem <= 0) continue;
-                dashOn = !dashOn;
-            }
-            double step = Math.Min(dashRem, len - consumed);
-            if (dashOn)
-            {
-                double t0 = consumed / len, t1 = (consumed + step) / len;
-                DrawStrokeSegment(w, h,
-                    ax + dx * t0, ay + dy * t0,
-                    ax + dx * t1, ay + dy * t1,
-                    ux, uy, step, radius, r2, stroke, sl, st, isw, ish, opacity);
-            }
-            consumed += step; dashRem -= step;
-        }
-    }
-
-    private void DrawStrokeJoin(
-        int w, int h, double cx, double cy,
-        double ux0, double uy0, double ux1, double uy1,
-        double radius, double r2, Pen stroke,
-        double sl, double st, double isw, double ish, double opacity)
-    {
-        double turn = ux0 * uy1 - uy0 * ux1;
-        if (Math.Abs(turn) <= 1e-10) return;
-        double n0x = -uy0, n0y = ux0, n1x = -uy1, n1y = ux1;
-        if (turn < 0) { n0x = -n0x; n0y = -n0y; n1x = -n1x; n1y = -n1y; }
-        double ax = cx + n0x * radius, ay = cy + n0y * radius;
-        double bx = cx + n1x * radius, by = cy + n1y * radius;
-        switch (stroke.Join)
-        {
-            case LineJoin.Round:
-                DrawRoundJoin(w, h, cx, cy, ax, ay, bx, by, r2, stroke, sl, st, isw, ish, opacity);
-                return;
-            case LineJoin.Miter:
-                if (TryIntersect(ax, ay, ux0, uy0, bx, by, ux1, uy1, out double mx, out double my))
+                int joins = contour.IsClosed ? segs.Count : Math.Max(0, segs.Count - 1);
+                for (int i = 0; i < joins; i++)
                 {
-                    double ml2 = (mx - cx) * (mx - cx) + (my - cy) * (my - cy);
-                    if (ml2 <= r2 * MiterLim * MiterLim)
-                    { DrawTriJoin(w, h, ax, ay, mx, my, bx, by, stroke, sl, st, isw, ish, opacity); return; }
+                    var cur = segs[i];
+                    var nxt = segs[(i + 1) % segs.Count];
+                    if (!cur.Valid || !nxt.Valid) continue;
+                    if (!NearlyEq(cur.X2, nxt.X1) || !NearlyEq(cur.Y2, nxt.Y1)) continue;
+                    AddJoinContour(strokeContours, new Point(nxt.X1, nxt.Y1), new Vector2D(cur.Ux, cur.Uy), new Vector2D(nxt.Ux, nxt.Uy), radius, stroke.Join, miterLimit);
                 }
-                break;
-        }
-        DrawTriJoin(w, h, cx, cy, ax, ay, bx, by, stroke, sl, st, isw, ish, opacity);
-    }
-
-    private void DrawRoundJoin(
-        int w, int h, double cx, double cy,
-        double ax, double ay, double bx, double by,
-        double r2, Pen stroke, double sl, double st, double isw, double ish, double opacity)
-    {
-        double r = Math.Sqrt(r2);
-        int x0 = Math.Clamp((int)(cx - r), 0, w - 1);
-        int x1 = Math.Clamp((int)(cx + r) + 1, 0, w - 1);
-        int y0 = Math.Clamp((int)(cy - r), 0, h - 1);
-        int y1 = Math.Clamp((int)(cy + r) + 1, 0, h - 1);
-        double avx = ax - cx, avy = ay - cy, bvx = bx - cx, bvy = by - cy;
-        double cab = avx * bvy - avy * bvx;
-        for (int py = y0; py <= y1; py++)
-        {
-            Color32* row = firstPixel + py * w;
-            double sy = Math.Clamp((py + 0.5 - st) * ish, 0.0, 1.0);
-            for (int px = x0; px <= x1; px++)
-            {
-                int c = 0;
-                c += RndHit(px + 0.25, py + 0.25, cx, cy, r2, avx, avy, bvx, bvy, cab) ? 1 : 0;
-                c += RndHit(px + 0.75, py + 0.25, cx, cy, r2, avx, avy, bvx, bvy, cab) ? 1 : 0;
-                c += RndHit(px + 0.25, py + 0.75, cx, cy, r2, avx, avy, bvx, bvy, cab) ? 1 : 0;
-                c += RndHit(px + 0.75, py + 0.75, cx, cy, r2, avx, avy, bvx, bvy, cab) ? 1 : 0;
-                if (c == 0) continue;
-                double sx = Math.Clamp((px + 0.5 - sl) * isw, 0.0, 1.0);
-                Color32.BlendPremultiplied(stroke.Sample(sx, sy).ToPremultiplied * (c * SampleW * opacity), ref row[px]);
             }
         }
-    }
 
-    private void DrawTriJoin(
-        int w, int h,
-        double x1, double y1, double x2, double y2, double x3, double y3,
-        Pen stroke, double sl, double st, double isw, double ish, double opacity)
-    {
-        int minX = Math.Clamp((int)Math.Min(x1, Math.Min(x2, x3)), 0, w - 1);
-        int maxX = Math.Clamp((int)Math.Max(x1, Math.Max(x2, x3)) + 1, 0, w - 1);
-        int minY = Math.Clamp((int)Math.Min(y1, Math.Min(y2, y3)), 0, h - 1);
-        int maxY = Math.Clamp((int)Math.Max(y1, Math.Max(y2, y3)) + 1, 0, h - 1);
-        for (int py = minY; py <= maxY; py++)
-        {
-            Color32* row = firstPixel + py * w;
-            double sy = Math.Clamp((py + 0.5 - st) * ish, 0.0, 1.0);
-            for (int px = minX; px <= maxX; px++)
-            {
-                int c = 0;
-                c += InTri(px + 0.25, py + 0.25, x1, y1, x2, y2, x3, y3) ? 1 : 0;
-                c += InTri(px + 0.75, py + 0.25, x1, y1, x2, y2, x3, y3) ? 1 : 0;
-                c += InTri(px + 0.25, py + 0.75, x1, y1, x2, y2, x3, y3) ? 1 : 0;
-                c += InTri(px + 0.75, py + 0.75, x1, y1, x2, y2, x3, y3) ? 1 : 0;
-                if (c == 0) continue;
-                double sx = Math.Clamp((px + 0.5 - sl) * isw, 0.0, 1.0);
-                Color32.BlendPremultiplied(stroke.Sample(sx, sy).ToPremultiplied * (c * SampleW * opacity), ref row[px]);
-            }
-        }
-    }
+        if (strokeContours.Count == 0) return;
 
-    private void DrawStrokePoint(
-        int w, int h, double x, double y,
-        double radius, double r2, Pen stroke,
-        double sl, double st, double isw, double ish, double opacity)
-    {
-        int x0 = Math.Clamp((int)(x - radius), 0, w - 1);
-        int x1 = Math.Clamp((int)(x + radius) + 1, 0, w - 1);
-        int y0 = Math.Clamp((int)(y - radius), 0, h - 1);
-        int y1 = Math.Clamp((int)(y + radius) + 1, 0, h - 1);
-        for (int py = y0; py <= y1; py++)
-        {
-            Color32* row = firstPixel + py * w;
-            double sy = Math.Clamp((py + 0.5 - st) * ish, 0.0, 1.0);
-            for (int px = x0; px <= x1; px++)
-            {
-                int c = 0; double ex, ey;
-                ex = px + 0.25 - x; ey = py + 0.25 - y; if (ex * ex + ey * ey <= r2) c++;
-                ex = px + 0.75 - x; ey = py + 0.25 - y; if (ex * ex + ey * ey <= r2) c++;
-                ex = px + 0.25 - x; ey = py + 0.75 - y; if (ex * ex + ey * ey <= r2) c++;
-                ex = px + 0.75 - x; ey = py + 0.75 - y; if (ex * ex + ey * ey <= r2) c++;
-                if (c == 0) continue;
-                double sx = Math.Clamp((px + 0.5 - sl) * isw, 0.0, 1.0);
-                Color32.BlendPremultiplied(stroke.Sample(sx, sy).ToPremultiplied * (c * SampleW * opacity), ref row[px]);
-            }
-        }
-    }
-
-    private void DrawStrokeSegment(
-        int w, int h, double x1, double y1, double x2, double y2,
-        double ux, double uy, double len, double radius, double r2,
-        Pen stroke, double sl, double st, double isw, double ish, double opacity)
-    {
-        double vx = -uy, vy = ux;
-        double pad = stroke.Cap == LineCap.Flat ? 0 : radius;
-        int minX = Math.Clamp((int)(Math.Min(x1, x2) - pad - radius), 0, w - 1);
-        int maxX = Math.Clamp((int)(Math.Max(x1, x2) + pad + radius) + 1, 0, w - 1);
-        int minY = Math.Clamp((int)(Math.Min(y1, y2) - pad - radius), 0, h - 1);
-        int maxY = Math.Clamp((int)(Math.Max(y1, y2) + pad + radius) + 1, 0, h - 1);
-        for (int py = minY; py <= maxY; py++)
-        {
-            Color32* row = firstPixel + py * w;
-            double sy = Math.Clamp((py + 0.5 - st) * ish, 0.0, 1.0);
-            for (int px = minX; px <= maxX; px++)
-            {
-                int c = 0;
-                c += SegHit(px + 0.25, py + 0.25, x1, y1, x2, y2, ux, uy, vx, vy, len, radius, r2, stroke.Cap) ? 1 : 0;
-                c += SegHit(px + 0.75, py + 0.25, x1, y1, x2, y2, ux, uy, vx, vy, len, radius, r2, stroke.Cap) ? 1 : 0;
-                c += SegHit(px + 0.25, py + 0.75, x1, y1, x2, y2, ux, uy, vx, vy, len, radius, r2, stroke.Cap) ? 1 : 0;
-                c += SegHit(px + 0.75, py + 0.75, x1, y1, x2, y2, ux, uy, vx, vy, len, radius, r2, stroke.Cap) ? 1 : 0;
-                if (c == 0) continue;
-                double sx = Math.Clamp((px + 0.5 - sl) * isw, 0.0, 1.0);
-                Color32.BlendPremultiplied(stroke.Sample(sx, sy).ToPremultiplied * (c * SampleW * opacity), ref row[px]);
-            }
-        }
-    }
-
-    // ── Geometry helpers ──────────────────────────────────────────────────────
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool RndHit(double x, double y, double cx, double cy, double r2,
-        double avx, double avy, double bvx, double bvy, double cab)
-    {
-        double vx = x - cx, vy = y - cy;
-        if (vx * vx + vy * vy > r2) return false;
-        double ca = avx * vy - avy * vx, cb = vx * bvy - vy * bvx;
-        return cab >= 0 ? ca >= 0 && cb >= 0 : ca <= 0 && cb <= 0;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool InTri(double px, double py,
-        double x1, double y1, double x2, double y2, double x3, double y3)
-    {
-        double d1 = (px - x2) * (y1 - y2) - (x1 - x2) * (py - y2);
-        double d2 = (px - x3) * (y2 - y3) - (x2 - x3) * (py - y3);
-        double d3 = (px - x1) * (y3 - y1) - (x3 - x1) * (py - y1);
-        return !((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0));
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool SegHit(double sx, double sy,
-        double x1, double y1, double x2, double y2,
-        double ux, double uy, double vx, double vy,
-        double len, double radius, double r2, LineCap cap)
-    {
-        double rx = sx - x1, ry = sy - y1;
-        double along = rx * ux + ry * uy, across = rx * vx + ry * vy;
-        return cap switch
-        {
-            LineCap.Flat => along >= 0 && along <= len && Math.Abs(across) <= radius,
-            LineCap.Square => along >= -radius && along <= len + radius && Math.Abs(across) <= radius,
-            LineCap.Round => (along >= 0 && along <= len && Math.Abs(across) <= radius)
-                           || (along < 0 && rx * rx + ry * ry <= r2)
-                           || (along > len && (sx - x2) * (sx - x2) + (sy - y2) * (sy - y2) <= r2),
-            _ => along >= 0 && along <= len && Math.Abs(across) <= radius,
-        };
+        Path2D strokePath = new(FillRule.NonZero, strokeContours);
+        CellFill(strokePath, stroke.Brush, opacity, w, h, samplingBounds);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -880,6 +714,211 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static bool NearlyEq(double a, double b) => Math.Abs(a - b) <= 1e-6;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool TryInitializeDash(
+        DashPattern dash, double scale, double offset,
+        out int dashIndex, out bool dashOn, out double dashRem)
+    {
+        dashIndex = 0;
+        dashOn = true;
+        dashRem = 0;
+
+        int count = dash.Count;
+        if (count == 0 || !double.IsFinite(scale) || scale <= 0) return false;
+
+        double cycle = 0;
+        for (int i = 0; i < count; i++)
+        {
+            DashSegment segment = dash[i];
+            cycle += Math.Max(0, segment.Fill) + Math.Max(0, segment.Gap);
+        }
+
+        if (!(cycle > 0) || !double.IsFinite(offset)) return false;
+
+        double remaining = offset * scale;
+        if (!double.IsFinite(remaining)) remaining = 0;
+        remaining %= cycle * scale;
+        if (remaining < 0) remaining += cycle * scale;
+        remaining /= scale;
+
+        for (int guard = 0; guard < count * 4 + 4; guard++)
+        {
+            DashSegment segment = dash[dashIndex];
+            double fill = Math.Max(0, segment.Fill);
+            double gap = Math.Max(0, segment.Gap);
+
+            if (remaining < fill)
+            {
+                dashOn = true;
+                dashRem = (fill - remaining) * scale;
+                return dashRem > 0;
+            }
+
+            remaining -= fill;
+
+            if (remaining < gap)
+            {
+                dashOn = false;
+                dashRem = (gap - remaining) * scale;
+                return dashRem > 0;
+            }
+
+            remaining -= gap;
+            dashIndex = (dashIndex + 1) % count;
+        }
+
+        DashSegment first = dash[dashIndex];
+        dashOn = true;
+        dashRem = Math.Max(0, first.Fill) * scale;
+        return dashRem > 0;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool AdvanceDash(
+        DashPattern dash, double scale,
+        ref int dashIndex, ref bool dashOn, ref double dashRem)
+    {
+        int count = dash.Count;
+        if (count == 0 || !double.IsFinite(scale) || scale <= 0) return false;
+
+        for (int guard = 0; guard < count * 4 + 4; guard++)
+        {
+            if (dashOn)
+            {
+                dashOn = false;
+                dashRem = Math.Max(0, dash[dashIndex].Gap) * scale;
+                if (dashRem > 0) return true;
+            }
+            else
+            {
+                dashIndex = (dashIndex + 1) % count;
+                dashOn = true;
+                dashRem = Math.Max(0, dash[dashIndex].Fill) * scale;
+                if (dashRem > 0) return true;
+            }
+        }
+
+        return false;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void AddStrokeSegmentContour(
+        List<PathContour> contours,
+        Point start, Point end, Vector2D normal, double radius)
+    {
+        Point p0 = start + normal * radius;
+        Point p1 = end + normal * radius;
+        Point p2 = end - normal * radius;
+        Point p3 = start - normal * radius;
+        contours.Add(CreatePolygonContour([p0, p1, p2, p3]));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void AddCapContour(
+        List<PathContour> contours,
+        Point endpoint, Vector2D tangent, Vector2D normal,
+        double radius, LineCap cap, bool isStart)
+    {
+        switch (cap)
+        {
+            case LineCap.Flat:
+                return;
+            case LineCap.Round:
+                AddCircleContour(contours, endpoint, radius);
+                return;
+            case LineCap.Square:
+                Point start = isStart ? endpoint - tangent * radius : endpoint;
+                Point end = isStart ? endpoint : endpoint + tangent * radius;
+                AddStrokeSegmentContour(contours, start, end, normal, radius);
+                return;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void AddJoinContour(
+        List<PathContour> contours,
+        Point center, Vector2D prevU, Vector2D nextU, double radius, LineJoin join, double miterLimit)
+    {
+        double turn = prevU.Cross(nextU);
+        if (Math.Abs(turn) <= 1e-10) return;
+
+        Vector2D n0 = new(-prevU.Y, prevU.X);
+        Vector2D n1 = new(-nextU.Y, nextU.X);
+        if (turn < 0)
+        {
+            n0 = -n0;
+            n1 = -n1;
+        }
+
+        Point ax = center + n0 * radius;
+        Point bx = center + n1 * radius;
+        switch (join)
+        {
+            case LineJoin.Round:
+                AddCircleContour(contours, center, radius);
+                return;
+            case LineJoin.Miter:
+                if (TryIntersect(ax.X, ax.Y, prevU.X, prevU.Y, bx.X, bx.Y, nextU.X, nextU.Y, out double mx, out double my))
+                {
+                    double ml2 = (mx - center.X) * (mx - center.X) + (my - center.Y) * (my - center.Y);
+                    if (ml2 <= radius * radius * miterLimit * miterLimit)
+                    {
+                        AddTriangleContour(contours, ax, new(mx, my), bx);
+                        return;
+                    }
+                }
+                break;
+        }
+
+        AddTriangleContour(contours, center, ax, bx);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void AddCircleContour(List<PathContour> contours, Point center, double radius)
+    {
+        double c = radius * PathBuilder.CircleConstant;
+        Point top = new(center.X, center.Y - radius);
+        Point right = new(center.X + radius, center.Y);
+        Point bot = new(center.X, center.Y + radius);
+        Point left = new(center.X - radius, center.Y);
+
+        contours.Add(new PathContour([
+            new CubicSegment(top, new(top.X + c, top.Y), new(right.X, right.Y - c), right),
+            new CubicSegment(right, new(right.X, right.Y + c), new(bot.X + c, bot.Y), bot),
+            new CubicSegment(bot, new(bot.X - c, bot.Y), new(left.X, left.Y + c), left),
+            new CubicSegment(left, new(left.X, left.Y - c), new(top.X - c, top.Y), top),
+        ]));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void AddTriangleContour(List<PathContour> contours, Point a, Point b, Point c)
+        => contours.Add(CreatePolygonContour([a, b, c]));
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static PathContour CreatePolygonContour(Point[] points)
+    {
+        if (points.Length < 2) throw new ArgumentException("Polygon requires at least two points.");
+        if (SignedArea(points) < 0) Array.Reverse(points);
+
+        var segs = new IPathSegment[points.Length];
+        for (int i = 0; i < points.Length; i++)
+            segs[i] = new LineSegment(points[i], points[(i + 1) % points.Length]);
+        return new PathContour(segs);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static double SignedArea(ReadOnlySpan<Point> points)
+    {
+        double area = 0;
+        for (int i = 0; i < points.Length; i++)
+        {
+            Point a = points[i];
+            Point b = points[(i + 1) % points.Length];
+            area += a.X * b.Y - b.X * a.Y;
+        }
+        return area;
+    }
 
     private static Rect? NormalizeRectOrNull(Rect r)
         => IsFiniteRect(r) ? r.Normalized : null;

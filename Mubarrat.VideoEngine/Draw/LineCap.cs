@@ -4,5 +4,6 @@ public enum LineCap
 {
     Flat,
     Square,
-    Round
+    Round,
+    Triangle
 }
