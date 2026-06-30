@@ -128,7 +128,8 @@ MVE is organized as a pipeline. Each stage is separated, independently composabl
 
 Everything visible in a frame is a `Drawing`. Drawings form a tree:
 
-- `PathDrawing` — a single vector path with fill, stroke, transform, and gradient
+- `PathDrawing` — a single explicit vector path with fill, stroke, transform, and gradient
+- `FieldDrawing` — a single implicit vector field with fill, stroke, transform, and gradient
 - `GroupDrawing` — a composite of child drawings, with shared transform and clip
 - `DrawingContext` — the rendering surface; accepts drawing commands and produces a rasterized frame
 
@@ -244,7 +245,7 @@ using Mubarrat.VideoEngine.Timeline;
 // 60 fps timeline
 var timeline = new TimelineSource(60);
 
-// Add a layer: a red-filled circle, starting at frame 0
+// Add a layer: a red-filled circle, starting at timestamp 0s
 timeline.NewLayer.To(0, new PathDrawing
 {
     Path = PathBuilder.Circle((960, 540), 300).BuildPath(),
@@ -275,6 +276,9 @@ using (var stream = File.OpenRead("path\\to\\latinmodern-math.otf"))
     latinModernMathFont = FontCollection.LoadFont("Latin Modern Math", stream);
 }
 
+// 60 fps timeline
+var timeline = new TimelineSource(60);
+
 // A StackPanel composing a label above a diagram
 var panel = new StackPanel
 {
@@ -284,15 +288,15 @@ var panel = new StackPanel
     {
         new TextBlock
         {
-			FontFace = latinModernMathFont,
+            FontFace = latinModernMathFont,
             Text = "The Pythagorean Theorem",
             FontSize = 48,
             Foreground = new SolidColorBrush(0xFF1A1A2E)
         },
         new LatexBlock
         {
-			FontFace = latinModernMathFont,
-            Latex = @"a^2 + b^2 = c^2",
+            FontFace = latinModernMathFont,
+            Latex = "a^2 + b^2 = c^2",
             FontSize = 64,
             Foreground = new SolidColorBrush(0xFFFFFFFF)
         }
@@ -307,15 +311,15 @@ timeline.NewLayer.To(0, panel);
 ```csharp
 var layer = timeline.NewLayer;
 
-// Frame 0: circle
+// Timestamp 0s: circle
 layer.To(0, new PathDrawing
 {
     Path = PathBuilder.Circle((960, 540), 200).BuildPath(),
     Fill = new SolidColorBrush(0xFF4FC3F7)
 });
 
-// Frame 90: morph to square over 1.5 seconds (eased)
-layer.To(90, new PathDrawing
+// Timestamp 1.5s: morph to square over 1.5 seconds (eased)
+layer.To(1.5, new PathDrawing
 {
     Path = PathBuilder.Rectangle(760, 340, 400, 400).BuildPath(),
     Fill = new SolidColorBrush(0xFFEF9A9A)
