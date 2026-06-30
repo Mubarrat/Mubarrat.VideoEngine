@@ -318,12 +318,12 @@ layer.To(0, new PathDrawing
     Fill = new SolidColorBrush(0xFF4FC3F7)
 });
 
-// Timestamp 1.5s: morph to square over 1.5 seconds (eased)
-layer.To(1.5, new PathDrawing
+// Timestamp 1s - 2.5s: morph to square over 1.5 seconds (eased)
+layer.To(1, 2.5, new PathDrawing
 {
     Path = PathBuilder.Rectangle(760, 340, 400, 400).BuildPath(),
     Fill = new SolidColorBrush(0xFFEF9A9A)
-}, Easing.EaseInOut);
+}, easingFunction: EasingFunctions.QuadraticEaseInOut);
 ```
 
 ---
