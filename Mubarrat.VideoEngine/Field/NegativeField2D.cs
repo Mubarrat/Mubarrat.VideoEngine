@@ -3,7 +3,7 @@
 public class NegativeField2D(Field2D child) : Field2D, IUnaryField2D, IIntervalField2D, ICoverageField2D
 {
     public Field2D Child { get; } = child ?? throw new ArgumentNullException(nameof(child));
-    public override Rect Bounds => Child.Bounds;
+    public override Rect Bounds => Child is NegativeField2D field2D ? field2D.Child.Bounds : Rect.Universal;
 
     public override double Evaluate(Point p) => -Child.Evaluate(p);
 

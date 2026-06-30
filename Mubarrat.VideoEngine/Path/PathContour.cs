@@ -68,13 +68,11 @@ public sealed class PathContour : IReadOnlyCollection<IPathSegment>, ILerpable<P
         // _a[i] lerps to _b[i] at t=1.
         private readonly CubicSegment[] _a;
         private readonly CubicSegment[] _b;
-        private readonly bool _closed;
 
-        private ContourMorph(CubicSegment[] a, CubicSegment[] b, bool closed)
+        private ContourMorph(CubicSegment[] a, CubicSegment[] b)
         {
             _a = a;
             _b = b;
-            _closed = closed;
         }
 
         // ── Public factory ───────────────────────────────────────────────────────
@@ -104,7 +102,7 @@ public sealed class PathContour : IReadOnlyCollection<IPathSegment>, ILerpable<P
             if (closed && a.Count > 1)
                 AlignPhase(a, b);
 
-            return new ContourMorph(a.ToArray(), b.ToArray(), closed);
+            return new ContourMorph([.. a], [.. b]);
         }
 
         // ── Per-frame evaluate ───────────────────────────────────────────────────
@@ -115,8 +113,8 @@ public sealed class PathContour : IReadOnlyCollection<IPathSegment>, ILerpable<P
         /// <param name="t">Interpolation factor, typically [0, 1].</param>
         public PathContour Evaluate(double t)
         {
-            if (t <= 0) return BuildContour(_a, _closed);
-            if (t >= 1) return BuildContour(_b, _closed);
+            if (t <= 0) return BuildContour(_a);
+            if (t >= 1) return BuildContour(_b);
 
             var segs = new IPathSegment[_a.Length];
             for (int i = 0; i < _a.Length; i++)
@@ -239,53 +237,247 @@ public sealed class PathContour : IReadOnlyCollection<IPathSegment>, ILerpable<P
         // ── Step 3: Phase alignment ──────────────────────────────────────────────
 
         /// <summary>
-        /// Finds the cyclic rotation of <paramref name="b"/> that minimises
-        /// Σ dist(a[i].Start, b[(i+k)%n].Start), also testing the reverse
-        /// of b to handle winding direction mismatches.
-        /// Mutates b in-place to the best alignment.
-        /// </summary>
-        /// <summary>
-        /// O(n) phase alignment.
+        /// Winding-safe phase alignment.
         ///
-        /// Step A — find offset: one pass over B to find which b[j].Start is
-        ///           geometrically closest to a[0].Start.  This anchors the
-        ///           dominant feature of A to the nearest matching feature in B,
-        ///           which in practice matches the globally optimal rotation for
-        ///           smooth closed shapes (glyphs, icons, etc.).
+        /// Step A — reverse only when winding differs. Reversing merely because
+        ///           a reversed contour scores lower can mirror symmetric glyphs
+        ///           and swap hole/outer semantics during interpolation.
         ///
-        /// Step B — winding check: score the chosen offset under forward and
-        ///           reversed winding in a single O(n) pass each, pick the winner.
-        ///
-        /// Total: 3 × O(n) passes.
+        /// Step B — rotate B to the best cyclic start index using the same
+        ///           curvature-weighted matcher used by the old Immutable.Subpath
+        ///           implementation, but directly on the cubic contour vertices.
         /// </summary>
         private static void AlignPhase(List<CubicSegment> a, List<CubicSegment> b)
         {
             int n = a.Count; // == b.Count after resampling
+            if (n == 0 || b.Count != n)
+                return;
 
-            // ── A: find best offset in one pass ──────────────────────────────────
-            Point anchor = a[0].Start;
-            int bestOffset = 0;
-            double bestDist2 = double.MaxValue;
+            double areaA = SignedArea(a);
+            double areaB = SignedArea(b);
+            const double AreaEpsilon = 1e-12;
 
-            for (int j = 0; j < n; j++)
-            {
-                double d = Dist2(anchor, b[j].Start);
-                if (d < bestDist2) { bestDist2 = d; bestOffset = j; }
-            }
+            if (Math.Abs(areaA) > AreaEpsilon &&
+                Math.Abs(areaB) > AreaEpsilon &&
+                Math.Sign(areaA) != Math.Sign(areaB))
+                ReverseCubicList(b);
 
-            // ── B: decide winding — one O(n) pass per direction ──────────────────
-            double costFwd = 0, costRev = 0;
+            Point[] reference = BuildPhasePoints(a);
+            Point[] candidate = BuildPhasePoints(b);
+            int shift = FindBestCyclicShift(reference, candidate);
+            if (shift != 0) RotateCubicList(b, shift);
+        }
+
+        private static double SignedArea(List<CubicSegment> segs)
+        {
+            double area = 0;
+            int n = segs.Count;
+
             for (int i = 0; i < n; i++)
             {
-                int jFwd = (i + bestOffset) % n;
-                int jRev = (n - 1 - (i + bestOffset) % n + n) % n;
-                costFwd += Dist2(a[i].Start, b[jFwd].Start);
-                costRev += Dist2(a[i].Start, b[jRev].Start);
+                Point p = segs[i].Start;
+                Point q = segs[(i + 1) % n].Start;
+                area += p.X * q.Y - p.Y * q.X;
             }
 
-            // Apply: reverse first so that offset indexing stays consistent
-            if (costRev < costFwd) ReverseCubicList(b);
-            if (bestOffset != 0) RotateCubicList(b, bestOffset);
+            return area;
+        }
+
+        private static Point[] BuildPhasePoints(List<CubicSegment> segs)
+        {
+            var points = new Point[segs.Count];
+            if (segs.Count == 0)
+                return points;
+
+            double cx = 0;
+            double cy = 0;
+
+            for (int i = 0; i < segs.Count; i++)
+            {
+                Point p = segs[i].Start;
+                cx += p.X;
+                cy += p.Y;
+            }
+
+            cx /= segs.Count;
+            cy /= segs.Count;
+
+            double scale2 = 0;
+            for (int i = 0; i < segs.Count; i++)
+            {
+                Point p = segs[i].Start;
+                double dx = p.X - cx;
+                double dy = p.Y - cy;
+                scale2 += dx * dx + dy * dy;
+            }
+
+            double scale = scale2 > double.Epsilon
+                ? Math.Sqrt(scale2 / segs.Count)
+                : 1;
+
+            for (int i = 0; i < segs.Count; i++)
+            {
+                Point p = segs[i].Start;
+                points[i] = new Point((p.X - cx) / scale, (p.Y - cy) / scale);
+            }
+
+            return points;
+        }
+
+        private static int FindBestCyclicShift(Point[] reference, Point[] candidate)
+        {
+            int n = reference.Length;
+            if (n == 0 || candidate.Length != n)
+                return 0;
+
+            if (n <= 12)
+                return FindBestCyclicShiftExhaustive(reference, candidate);
+
+            double[] referenceCurvature = BuildCurvatureWeights(reference);
+            double[] candidateCurvature = BuildCurvatureWeights(candidate);
+
+            int coarseStride = Math.Max(1, n >> 4);
+            int sampleStep = Math.Max(1, n >> 4);
+
+            int coarseBestShift = 0;
+            double coarseBestScore = double.MaxValue;
+
+            for (int shift = 0; shift < n; shift += coarseStride)
+            {
+                double score = EvaluateShiftScore(reference, candidate, referenceCurvature, candidateCurvature, shift, sampleStep, coarseBestScore);
+                if (score < coarseBestScore)
+                {
+                    coarseBestScore = score;
+                    coarseBestShift = shift;
+                }
+            }
+
+            int refineRadius = Math.Max(3, coarseStride);
+            int bestShift = coarseBestShift;
+            double bestScore = double.MaxValue;
+
+            for (int delta = -refineRadius; delta <= refineRadius; delta++)
+            {
+                int shift = Mod(coarseBestShift + delta, n);
+                double score = EvaluateShiftScore(reference, candidate, referenceCurvature, candidateCurvature, shift, 1, bestScore);
+                if (score < bestScore)
+                {
+                    bestScore = score;
+                    bestShift = shift;
+                }
+            }
+
+            double zeroScore = EvaluateShiftScore(reference, candidate, referenceCurvature, candidateCurvature, 0, 1, bestScore);
+            if (zeroScore <= bestScore * 1.000000001d)
+                return 0;
+
+            return bestShift;
+        }
+
+        private static int FindBestCyclicShiftExhaustive(Point[] reference, Point[] candidate)
+        {
+            int n = reference.Length;
+            int bestShift = 0;
+            double bestScore = double.MaxValue;
+
+            for (int shift = 0; shift < n; shift++)
+            {
+                double score = 0;
+                for (int i = 0; i < n; i++)
+                {
+                    Point a = reference[i];
+                    Point b = candidate[(i + shift) % n];
+
+                    score += Dist2(a, b);
+                    if (score >= bestScore)
+                        break;
+                }
+
+                if (score < bestScore)
+                {
+                    bestScore = score;
+                    bestShift = shift;
+                }
+            }
+
+            return bestShift;
+        }
+
+        private static double[] BuildCurvatureWeights(Point[] points)
+        {
+            int n = points.Length;
+            var curvature = new double[n];
+
+            if (n < 3)
+                return curvature;
+
+            for (int i = 0; i < n; i++)
+            {
+                Point prev = points[(i - 1 + n) % n];
+                Point cur = points[i];
+                Point next = points[(i + 1) % n];
+
+                double ax = cur.X - prev.X;
+                double ay = cur.Y - prev.Y;
+                double bx = next.X - cur.X;
+                double by = next.Y - cur.Y;
+
+                double al2 = ax * ax + ay * ay;
+                double bl2 = bx * bx + by * by;
+
+                if (al2 <= double.Epsilon || bl2 <= double.Epsilon)
+                    continue;
+
+                double cross = Math.Abs(ax * by - ay * bx);
+                curvature[i] = cross / Math.Sqrt(al2 * bl2);
+            }
+
+            return curvature;
+        }
+
+        private static double EvaluateShiftScore(
+            Point[] reference,
+            Point[] candidate,
+            double[] referenceCurvature,
+            double[] candidateCurvature,
+            int shift,
+            int step,
+            double earlyExit)
+        {
+            const double CurvatureMatchWeight = 0.45;
+            const double CurvatureMismatchPenalty = 0.20;
+
+            int n = reference.Length;
+            double score = 0;
+
+            for (int i = 0; i < n; i += step)
+            {
+                int j = i + shift;
+                if (j >= n) j -= n;
+
+                Point a = reference[i];
+                Point b = candidate[j];
+
+                double dist2 = Dist2(a, b);
+                double ka = referenceCurvature[i];
+                double kb = candidateCurvature[j];
+                double boost = 1d + CurvatureMatchWeight * (ka + kb);
+                double mismatch = ka - kb;
+
+                score += dist2 * boost + CurvatureMismatchPenalty * mismatch * mismatch;
+
+                if (score >= earlyExit)
+                    return score;
+            }
+
+            return score;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int Mod(int value, int modulus)
+        {
+            int result = value % modulus;
+            return result < 0 ? result + modulus : result;
         }
 
         /// <summary>
@@ -332,7 +524,7 @@ public sealed class PathContour : IReadOnlyCollection<IPathSegment>, ILerpable<P
             return dx * dx + dy * dy;
         }
 
-        private static PathContour BuildContour(CubicSegment[] segs, bool closed)
+        private static PathContour BuildContour(CubicSegment[] segs)
             => new(segs.Cast<IPathSegment>().ToArray());
     }
 }

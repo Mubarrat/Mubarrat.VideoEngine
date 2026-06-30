@@ -55,9 +55,9 @@ public sealed class Path2D : IReadOnlyCollection<PathContour>, ILerpable<Path2D>
     //
     // Pipeline (runs once in Prepare, not per frame):
     //
-    //   1. Centroid computation  — one pass per contour, O(segments)
-    //   2. Contour matching      — greedy nearest-centroid, O(n·m) where n,m are
-    //                              contour counts (typically 1–10, so effectively O(1))
+    //   1. Geometry-key build    — flatten contours once and classify nesting depth
+    //   2. Contour matching      — role-aware assignment, matching holes with holes
+    //                              and outer contours with outer contours
     //   3. Count padding         — unmatched contours from the longer path get a
     //                              point-collapsed "ghost" partner on the shorter side,
     //                              so the ghost grows/shrinks to/from a point during lerp
@@ -89,74 +89,49 @@ public sealed class Path2D : IReadOnlyCollection<PathContour>, ILerpable<Path2D>
             ArgumentNullException.ThrowIfNull(from);
             ArgumentNullException.ThrowIfNull(to);
 
-            // 1. Compute centroids for every contour in both paths
-            Point[] centroidsA = Array.ConvertAll(from._contours, Centroid);
-            Point[] centroidsB = Array.ConvertAll(to._contours, Centroid);
-
             int na = from.Count, nb = to.Count;
 
-            // 2. Greedy contour matching: for each A[i] find the nearest unmatched B[j].
-            //    O(na · nb) — contour counts are tiny (1–~10) so this is negligible.
-            //    matchAtoB[i] = j means A[i] is paired with B[j].
-            //    Unmatched B contours (when nb > na) are recorded in unmatchedB.
-            int[] matchAtoB = new int[na];
-            bool[] usedB = new bool[nb];
-            List<int> unmatchedB = new(Math.Max(0, nb - na));
+            // 1. Sort both sides by the same stable geometry key. The key starts
+            //    with containment depth so nested counters cannot swap with their
+            //    outer contour when their visual centers are close.
+            ContourKey[] fromKeys = BuildContourKeys(from._contours, from.FillRule);
+            ContourKey[] toKeys = BuildContourKeys(to._contours, to.FillRule);
+            Array.Sort(fromKeys, CompareContourKey);
+            Array.Sort(toKeys, CompareContourKey);
+
+            // 2. Build the ContourMorph array.
+            //    Pairs:   role-aware A[i] ↔ B[j]
+            //    Extras:  unmatched contours grow/shrink from their own center
+            int[] matchFromTo = MatchContourKeys(fromKeys, toKeys);
+            bool[] usedTo = new bool[nb];
+            var morphs = new List<ContourMorph>(Math.Max(na, nb));
 
             for (int i = 0; i < na; i++)
             {
-                int best = -1;
-                double bestD = double.MaxValue;
-                for (int j = 0; j < nb; j++)
-                {
-                    if (usedB[j]) continue;
-                    double d = Dist2(centroidsA[i], centroidsB[j]);
-                    if (d < bestD) { bestD = d; best = j; }
-                }
+                PathContour ca = from[fromKeys[i].Index];
+                int matchedTo = matchFromTo[i];
 
-                if (best == -1)
+                if (matchedTo >= 0)
                 {
-                    // nb < na: no B contour left — collapse A[i] to its own centroid.
-                    // We handle this below by pairing with a ghost.
-                    matchAtoB[i] = -1;
+                    usedTo[matchedTo] = true;
+                    morphs.Add(ContourMorph.Prepare(ca, to[toKeys[matchedTo].Index]));
                 }
                 else
                 {
-                    matchAtoB[i] = best;
-                    usedB[best] = true;
+                    morphs.Add(ContourMorph.Prepare(ca, CollapseToPoint(ca, fromKeys[i].Center)));
                 }
             }
 
-            // Collect unmatched B indices (when nb > na)
-            for (int j = 0; j < nb; j++)
-                if (!usedB[j]) unmatchedB.Add(j);
-
-            // 3. Build the ContourMorph array.
-            //    Pairs:   matched A[i] ↔ B[matchAtoB[i]]
-            //    Extras:  unmatched B[j] ↔ ghost(A side) collapsed to centroid of B[j]
-            //             unmatched A[i] ↔ ghost(B side) collapsed to centroid of A[i]
-            int totalPairs = na + unmatchedB.Count;
-            var morphs = new ContourMorph[totalPairs];
-
-            // Matched pairs
-            for (int i = 0; i < na; i++)
+            for (int i = 0; i < nb; i++)
             {
-                PathContour ca = from[i];
-                PathContour cb = matchAtoB[i] == -1
-                    ? CollapseToPoint(ca, centroidsA[i])   // nb < na: B ghost
-                    : to[matchAtoB[i]];
-                morphs[i] = ContourMorph.Prepare(ca, cb);
+                if (usedTo[i])
+                    continue;
+
+                PathContour cb = to[toKeys[i].Index];
+                morphs.Add(ContourMorph.Prepare(CollapseToPoint(cb, toKeys[i].Center), cb));
             }
 
-            // Extra B contours that had no A partner (nb > na): grow from a point
-            for (int k = 0; k < unmatchedB.Count; k++)
-            {
-                PathContour cb = to[unmatchedB[k]];
-                PathContour ghost = CollapseToPoint(cb, centroidsB[unmatchedB[k]]);
-                morphs[na + k] = ContourMorph.Prepare(ghost, cb);
-            }
-
-            return new PathMorph(morphs, from.FillRule, to.FillRule);
+            return new PathMorph([.. morphs], from.FillRule, to.FillRule);
         }
 
         // ── Per-frame evaluate ───────────────────────────────────────────────────
@@ -179,10 +154,10 @@ public sealed class Path2D : IReadOnlyCollection<PathContour>, ILerpable<Path2D>
         // ── Helpers ──────────────────────────────────────────────────────────────
 
         /// <summary>
-        /// Computes the centroid of a contour as the average of all segment start-points.
+        /// Computes the center point of a contour as the average of all segment mid-points.
         /// One pass, O(n segments).
         /// </summary>
-        private static Point Centroid(PathContour contour)
+        private static Point CenterPoint(PathContour contour)
         {
             if (contour.Count == 0) return default;
 
@@ -190,11 +165,373 @@ public sealed class Path2D : IReadOnlyCollection<PathContour>, ILerpable<Path2D>
             int n = 0;
             foreach (var seg in contour)
             {
-                sx += seg.Start.X;
-                sy += seg.Start.Y;
+                sx += (seg.Start.X + seg.End.X) * 0.5;
+                sy += (seg.Start.Y + seg.End.Y) * 0.5;
                 n++;
             }
             return new Point(sx / n, sy / n);
+        }
+
+        private static ContourKey[] BuildContourKeys(PathContour[] contours, FillRule fillRule)
+        {
+            var outlines = new ContourOutline[contours.Length];
+            var keys = new ContourKey[contours.Length];
+
+            for (int i = 0; i < contours.Length; i++)
+            {
+                PathContour contour = contours[i];
+                Rect bounds = contour.Bounds.Normalized;
+                Point center = CenterPoint(contour);
+                Point[] points = FlattenContour(contour);
+                double signedArea = SignedArea(points);
+                double boundsArea = bounds.IsNaN ? 0 : Math.Abs(bounds.Size.Area);
+
+                outlines[i] = new ContourOutline(points, bounds, center);
+                keys[i] = new ContourKey(i, 0, 0, center, signedArea, boundsArea);
+            }
+
+            for (int i = 0; i < keys.Length; i++)
+            {
+                int depth = 0;
+
+                for (int j = 0; j < outlines.Length; j++)
+                {
+                    if (i == j)
+                        continue;
+
+                    if (IsNestedInside(outlines[i], outlines[j]))
+                        depth++;
+                }
+
+                keys[i] = keys[i] with { Depth = depth };
+            }
+
+            int outerSign = FindOuterWindingSign(keys);
+            for (int i = 0; i < keys.Length; i++)
+            {
+                int role = keys[i].Depth & 1;
+
+                if (fillRule == FillRule.NonZero && outerSign != 0)
+                {
+                    int sign = Math.Sign(keys[i].SignedArea);
+                    if (sign != 0 && sign != outerSign)
+                        role = 1;
+                }
+
+                keys[i] = keys[i] with { Role = role };
+            }
+
+            return keys;
+        }
+
+        private static int CompareContourKey(ContourKey a, ContourKey b)
+        {
+            int cmp = a.Role.CompareTo(b.Role);
+            if (cmp != 0) return cmp;
+
+            cmp = a.Depth.CompareTo(b.Depth);
+            if (cmp != 0) return cmp;
+
+            cmp = a.Center.X.CompareTo(b.Center.X);
+            if (cmp != 0) return cmp;
+
+            cmp = a.Center.Y.CompareTo(b.Center.Y);
+            if (cmp != 0) return cmp;
+
+            cmp = a.BoundsArea.CompareTo(b.BoundsArea);
+            if (cmp != 0) return cmp;
+
+            cmp = Math.Abs(b.SignedArea).CompareTo(Math.Abs(a.SignedArea));
+            if (cmp != 0) return cmp;
+
+            return a.Index.CompareTo(b.Index);
+        }
+
+        private static int[] MatchContourKeys(ContourKey[] fromKeys, ContourKey[] toKeys)
+        {
+            var result = new int[fromKeys.Length];
+            Array.Fill(result, -1);
+
+            if (toKeys.Length == 0)
+                return result;
+
+            var used = new bool[toKeys.Length];
+
+            for (int i = 0; i < fromKeys.Length; i++)
+            {
+                int best = -1;
+                double bestCost = double.PositiveInfinity;
+
+                for (int j = 0; j < toKeys.Length; j++)
+                {
+                    if (used[j])
+                        continue;
+
+                    double cost = PairCost(fromKeys[i], toKeys[j]);
+                    if (cost < bestCost)
+                    {
+                        bestCost = cost;
+                        best = j;
+                    }
+                }
+
+                if (best >= 0)
+                {
+                    used[best] = true;
+                    result[i] = best;
+                }
+            }
+
+            return result;
+        }
+
+        private static double PairCost(ContourKey a, ContourKey b)
+        {
+            double cost = 0;
+
+            if (a.Role != b.Role)
+                cost += 1_000_000_000_000.0;
+
+            cost += Math.Abs(a.Depth - b.Depth) * 1_000_000_000.0;
+
+            int signA = Math.Sign(a.SignedArea);
+            int signB = Math.Sign(b.SignedArea);
+            if (signA != 0 && signB != 0 && signA != signB)
+                cost += 100_000_000.0;
+
+            double areaA = Math.Max(Math.Abs(a.SignedArea), a.BoundsArea);
+            double areaB = Math.Max(Math.Abs(b.SignedArea), b.BoundsArea);
+            double areaScale = Math.Max(Math.Max(areaA, areaB), 1.0);
+
+            cost += Dist2(a.Center, b.Center) / areaScale;
+            cost += Math.Abs(Math.Log((areaA + 1.0) / (areaB + 1.0))) * 10.0;
+
+            return cost;
+        }
+
+        private static int FindOuterWindingSign(ContourKey[] keys)
+        {
+            int sign = 0;
+            double bestArea = 0;
+
+            for (int i = 0; i < keys.Length; i++)
+            {
+                if (keys[i].Depth != 0)
+                    continue;
+
+                double area = Math.Abs(keys[i].SignedArea);
+                if (area > bestArea)
+                {
+                    bestArea = area;
+                    sign = Math.Sign(keys[i].SignedArea);
+                }
+            }
+
+            if (sign != 0)
+                return sign;
+
+            for (int i = 0; i < keys.Length; i++)
+            {
+                double area = Math.Abs(keys[i].SignedArea);
+                if (area > bestArea)
+                {
+                    bestArea = area;
+                    sign = Math.Sign(keys[i].SignedArea);
+                }
+            }
+
+            return sign;
+        }
+
+        private static Point[] FlattenContour(PathContour contour)
+        {
+            if (contour.Count == 0)
+                return [];
+
+            var points = new List<Point>(Math.Max(8, contour.Count * 4));
+
+            foreach (var segment in contour)
+            {
+                if (points.Count == 0 || points[^1] != segment.Start)
+                    points.Add(segment.Start);
+
+                switch (segment)
+                {
+                    case LineSegment line:
+                        points.Add(line.End);
+                        break;
+                    case QuadraticSegment quadratic:
+                        AddQuadraticPoints(points, quadratic);
+                        break;
+                    case CubicSegment cubic:
+                        AddCubicPoints(points, cubic);
+                        break;
+                    default:
+                        points.Add(segment.End);
+                        break;
+                }
+            }
+
+            if (points.Count > 1 && points[^1] == points[0])
+                points.RemoveAt(points.Count - 1);
+
+            return [.. points];
+        }
+
+        private static void AddQuadraticPoints(List<Point> points, QuadraticSegment segment)
+        {
+            int steps = EstimateSteps(segment.Start, segment.Control, segment.End);
+            for (int step = 1; step <= steps; step++)
+            {
+                double t = step / (double)steps;
+                points.Add(EvaluateQuadratic(segment, t));
+            }
+        }
+
+        private static void AddCubicPoints(List<Point> points, CubicSegment segment)
+        {
+            int steps = EstimateSteps(segment.Start, segment.Control1, segment.Control2, segment.End);
+            for (int step = 1; step <= steps; step++)
+            {
+                double t = step / (double)steps;
+                points.Add(EvaluateCubic(segment, t));
+            }
+        }
+
+        private static int EstimateSteps(params ReadOnlySpan<Point> points)
+        {
+            double polygonLength = 0;
+            for (int i = 1; i < points.Length; i++)
+                polygonLength += Dist(points[i - 1], points[i]);
+
+            return Math.Clamp((int)Math.Ceiling(polygonLength / 24.0), 4, 24);
+        }
+
+        private static Point EvaluateQuadratic(QuadraticSegment segment, double t)
+        {
+            double mt = 1 - t;
+            double a = mt * mt;
+            double b = 2 * mt * t;
+            double c = t * t;
+            return new(
+                a * segment.Start.X + b * segment.Control.X + c * segment.End.X,
+                a * segment.Start.Y + b * segment.Control.Y + c * segment.End.Y);
+        }
+
+        private static Point EvaluateCubic(CubicSegment segment, double t)
+        {
+            double mt = 1 - t;
+            double a = mt * mt * mt;
+            double b = 3 * mt * mt * t;
+            double c = 3 * mt * t * t;
+            double d = t * t * t;
+            return new(
+                a * segment.Start.X + b * segment.Control1.X + c * segment.Control2.X + d * segment.End.X,
+                a * segment.Start.Y + b * segment.Control1.Y + c * segment.Control2.Y + d * segment.End.Y);
+        }
+
+        private static double SignedArea(Point[] points)
+        {
+            if (points.Length < 3)
+                return 0;
+
+            double area = 0;
+            for (int i = 0; i < points.Length; i++)
+            {
+                Point current = points[i];
+                Point next = points[(i + 1) % points.Length];
+                area += current.X * next.Y - current.Y * next.X;
+            }
+            return area * 0.5;
+        }
+
+        private static bool IsNestedInside(ContourOutline candidate, ContourOutline container)
+        {
+            if (candidate.Points.Length < 3 || container.Points.Length < 3)
+                return false;
+
+            if (!BoundsContains(container.Bounds, candidate.Bounds))
+                return false;
+
+            int samples = 0;
+            int inside = 0;
+            int stride = Math.Max(1, candidate.Points.Length / 24);
+
+            if (ContainsPoint(container, candidate.Center))
+                inside++;
+            samples++;
+
+            for (int i = 0; i < candidate.Points.Length; i += stride)
+            {
+                if (ContainsPoint(container, candidate.Points[i]))
+                    inside++;
+                samples++;
+            }
+
+            return inside * 2 >= samples;
+        }
+
+        private static bool BoundsContains(Rect outer, Rect inner)
+        {
+            const double epsilon = 1e-9;
+            return !outer.IsNaN &&
+                !inner.IsNaN &&
+                inner.Left >= outer.Left - epsilon &&
+                inner.Right <= outer.Right + epsilon &&
+                inner.Top >= outer.Top - epsilon &&
+                inner.Bottom <= outer.Bottom + epsilon;
+        }
+
+        private static bool ContainsPoint(ContourOutline outline, Point point)
+        {
+            if (outline.Points.Length < 3)
+                return false;
+
+            Rect bounds = outline.Bounds;
+            const double epsilon = 1e-9;
+            if (bounds.IsNaN ||
+                point.X < bounds.Left - epsilon ||
+                point.X > bounds.Right + epsilon ||
+                point.Y < bounds.Top - epsilon ||
+                point.Y > bounds.Bottom + epsilon)
+                return false;
+
+            bool inside = false;
+            Point previous = outline.Points[^1];
+
+            for (int i = 0; i < outline.Points.Length; i++)
+            {
+                Point current = outline.Points[i];
+                bool crosses = (current.Y > point.Y) != (previous.Y > point.Y);
+
+                if (crosses)
+                {
+                    double x = (previous.X - current.X) * (point.Y - current.Y) /
+                        (previous.Y - current.Y) + current.X;
+                    if (x > point.X)
+                        inside = !inside;
+                }
+
+                previous = current;
+            }
+
+            return inside;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static double Dist(Point a, Point b)
+        {
+            double dx = a.X - b.X;
+            double dy = a.Y - b.Y;
+            return Math.Sqrt(dx * dx + dy * dy);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static double Dist2(Point a, Point b)
+        {
+            double dx = a.X - b.X;
+            double dy = a.Y - b.Y;
+            return dx * dx + dy * dy;
         }
 
         /// <summary>
@@ -211,11 +548,14 @@ public sealed class Path2D : IReadOnlyCollection<PathContour>, ILerpable<Path2D>
             return new PathContour(segs);
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static double Dist2(Point a, Point b)
-        {
-            double dx = a.X - b.X, dy = a.Y - b.Y;
-            return dx * dx + dy * dy;
-        }
+        private readonly record struct ContourOutline(Point[] Points, Rect Bounds, Point Center);
+
+        private readonly record struct ContourKey(
+            int Index,
+            int Depth,
+            int Role,
+            Point Center,
+            double SignedArea,
+            double BoundsArea);
     }
 }
