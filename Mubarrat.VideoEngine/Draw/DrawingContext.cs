@@ -832,6 +832,12 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
                 Point end = isStart ? endpoint : endpoint + tangent * radius;
                 AddStrokeSegmentContour(contours, start, end, normal, radius);
                 return;
+            case LineCap.Triangle:
+                Point tip = isStart ? endpoint - tangent * radius : endpoint + tangent * radius;
+                Point baseLeft = endpoint + normal * radius;
+                Point baseRight = endpoint - normal * radius;
+                AddTriangleContour(contours, tip, baseLeft, baseRight);
+                return;
         }
     }
 
@@ -840,12 +846,14 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
         List<PathContour> contours,
         Point center, Vector2D prevU, Vector2D nextU, double radius, LineJoin join, double miterLimit)
     {
+        if (join is LineJoin.None) return;
+
         double turn = prevU.Cross(nextU);
         if (Math.Abs(turn) <= 1e-10) return;
 
         Vector2D n0 = new(-prevU.Y, prevU.X);
         Vector2D n1 = new(-nextU.Y, nextU.X);
-        if (turn < 0)
+        if (turn > 0)
         {
             n0 = -n0;
             n1 = -n1;
@@ -855,23 +863,73 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
         Point bx = center + n1 * radius;
         switch (join)
         {
-            case LineJoin.Round:
-                AddCircleContour(contours, center, radius);
-                return;
             case LineJoin.Miter:
                 if (TryIntersect(ax.X, ax.Y, prevU.X, prevU.Y, bx.X, bx.Y, nextU.X, nextU.Y, out double mx, out double my))
                 {
                     double ml2 = (mx - center.X) * (mx - center.X) + (my - center.Y) * (my - center.Y);
                     if (ml2 <= radius * radius * miterLimit * miterLimit)
                     {
-                        AddTriangleContour(contours, ax, new(mx, my), bx);
+                        contours.Add(CreatePolygonContour([center, ax, new(mx, my), bx]));
                         return;
                     }
                 }
-                break;
+                goto case LineJoin.Bevel;
+            case LineJoin.Bevel:
+                AddTriangleContour(contours, center, ax, bx);
+                return;
+            case LineJoin.Round:
+                AddRoundJoinContour(contours, center, ax, bx);
+                return;
+        }
+    }
+
+    private static void AddRoundJoinContour(List<PathContour> contours, Point center, Point start, Point end)
+    {
+        double startVectorX = start.X - center.X;
+        double startVectorY = start.Y - center.Y;
+        double endVectorX = end.X - center.X;
+        double endVectorY = end.Y - center.Y;
+        double radius = Math.Sqrt(startVectorX * startVectorX + startVectorY * startVectorY);
+        if (radius <= 1e-10) return;
+
+        double startAngle = Math.Atan2(startVectorY, startVectorX);
+        double endAngle = Math.Atan2(endVectorY, endVectorX);
+        double sweep = endAngle - startAngle;
+        double fullTurn = Math.PI * 2.0;
+        while (sweep <= -Math.PI) sweep += fullTurn;
+        while (sweep > Math.PI) sweep -= fullTurn;
+        if (Math.Abs(sweep) <= 1e-10) return;
+
+        int pieceCount = Math.Max(1, (int)Math.Ceiling(Math.Abs(sweep) / (Math.PI * 0.5)));
+        double pieceSweep = sweep / pieceCount;
+        var segments = new List<IPathSegment>(pieceCount + 2)
+        {
+            new LineSegment(center, start)
+        };
+
+        Point current = start;
+        double currentAngle = startAngle;
+        for (int pieceIndex = 0; pieceIndex < pieceCount; pieceIndex++)
+        {
+            double nextAngle = pieceIndex == pieceCount - 1 ? startAngle + sweep : currentAngle + pieceSweep;
+            Point next = pieceIndex == pieceCount - 1
+                ? end
+                : new Point(center.X + Math.Cos(nextAngle) * radius, center.Y + Math.Sin(nextAngle) * radius);
+            double cubicK = 4.0 / 3.0 * Math.Tan((nextAngle - currentAngle) * 0.25);
+            Point control1 = new(
+                current.X - Math.Sin(currentAngle) * radius * cubicK,
+                current.Y + Math.Cos(currentAngle) * radius * cubicK);
+            Point control2 = new(
+                next.X + Math.Sin(nextAngle) * radius * cubicK,
+                next.Y - Math.Cos(nextAngle) * radius * cubicK);
+
+            segments.Add(new CubicSegment(current, control1, control2, next));
+            current = next;
+            currentAngle = nextAngle;
         }
 
-        AddTriangleContour(contours, center, ax, bx);
+        segments.Add(new LineSegment(end, center));
+        contours.Add(new PathContour(segments));
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
