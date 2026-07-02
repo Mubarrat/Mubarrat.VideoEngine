@@ -4,122 +4,155 @@ namespace Mubarrat.VideoEngine.Field;
 
 public class LerpField2D(Field2D a, Field2D b, double t) : Field2D, ISignedDistanceField2D, IIntervalField2D, ICoverageField2D, IGradientField2D
 {
-    public Field2D A { get; } = a;
-    public Field2D B { get; } = b;
-    public double T { get; } = t;
+    private const double GradientEpsilon = 1e-3;
+    private const int CoverageSamples = 4;
 
-    public override Rect Bounds => A.Bounds.Lerp(B.Bounds, T);
+    public Field2D A { get; } = a ?? throw new ArgumentNullException(nameof(a));
+    public Field2D B { get; } = b ?? throw new ArgumentNullException(nameof(b));
+    public double T { get; } = double.IsFinite(t) ? t : 0.0;
 
-    // -------------------------
-    // Evaluation (generic)
-    // -------------------------
+    public override Rect Bounds => GetBounds();
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public override double Evaluate(Point p) => SampleA(p).Lerp(SampleB(p), T);
+    public override double Evaluate(Point p)
+    {
+        if (T <= 0.0) return Sample(A, p);
+        if (T >= 1.0) return Sample(B, p);
+        return LerpValue(Sample(A, p), Sample(B, p), T);
+    }
 
-    // -------------------------
-    // Signed distance morph
-    // -------------------------
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public double SignedDistance(Point p)
     {
-        if (A is ISignedDistanceField2D sa && B is ISignedDistanceField2D sb)
-            return sa.SignedDistance(p).Lerp(sb.SignedDistance(p), T);
+        double value = Evaluate(p);
+        if (!double.IsFinite(value) || value == 0.0) return value;
 
-        // fallback: gradient-space approximation
-        return Evaluate(p);
+        double gradientLength = Gradient(p).Length;
+        return double.IsFinite(gradientLength) && gradientLength > 1e-9
+            ? value / gradientLength
+            : value;
     }
 
-    // -------------------------
-    // Interval morph
-    // -------------------------
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public FieldInterval EvaluateInterval(Rect r)
     {
+        if (T <= 0.0)
+            return A is IIntervalField2D ia0 ? ia0.EvaluateInterval(r) : FieldInterval.Unknown();
+        if (T >= 1.0)
+            return B is IIntervalField2D ib1 ? ib1.EvaluateInterval(r) : FieldInterval.Unknown();
+
         if (A is IIntervalField2D ia && B is IIntervalField2D ib)
         {
-            var a = ia.EvaluateInterval(r);
-            var b = ib.EvaluateInterval(r);
-            return new FieldInterval(a.Min.Lerp(b.Min, T), a.Max.Lerp(b.Max, T));
+            FieldInterval ar = ia.EvaluateInterval(r);
+            FieldInterval br = ib.EvaluateInterval(r);
+            return new FieldInterval(
+                LerpValue(ar.Min, br.Min, T),
+                LerpValue(ar.Max, br.Max, T));
         }
 
         return FieldInterval.Unknown();
     }
 
-    // -------------------------
-    // Helpers
-    // -------------------------
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private double SampleA(Point p)
-    {
-        if (A is ISignedDistanceField2D sdf)
-            return sdf.SignedDistance(p);
-
-        return A.Evaluate(p);
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private double SampleB(Point p)
-    {
-        if (B is ISignedDistanceField2D sdf)
-            return sdf.SignedDistance(p);
-
-        return B.Evaluate(p);
-    }
-
     public double GetCoverage(Rect pixel)
     {
-        if (A is ICoverageField2D ca && B is ICoverageField2D cb)
-        {
-            double a = ca.GetCoverage(pixel);
-            double b = cb.GetCoverage(pixel);
-            return a.Lerp(b, T);
-        }
+        if (pixel.Width <= 0.0 || pixel.Height <= 0.0) return 0.0;
 
-        // fallback: no analytical coverage available
-        // approximate via center sample
-        Point center = pixel.Center;
-        double v = Evaluate(center);
-        return Math.Clamp(0.5 - Math.Abs(v), 0.0, 1.0);
+        FieldInterval range = EvaluateInterval(pixel);
+        if (range.IsFullyAbove(0.0)) return 0.0;
+        if (range.IsFullyBelow(0.0)) return 1.0;
+
+        if (T <= 0.0 && A is ICoverageField2D ca) return ca.GetCoverage(pixel);
+        if (T >= 1.0 && B is ICoverageField2D cb) return cb.GetCoverage(pixel);
+
+        return CoverageMsaa(pixel);
     }
 
     public Vector2D Gradient(Point p)
     {
-        // 1. Perfect case: both gradient-aware
-        if (A is IGradientField2D ga && B is IGradientField2D gb)
-        {
-            return ga.Gradient(p).Lerp(gb.Gradient(p), T);
-        }
+        if (T <= 0.0) return SampleGradient(A, p);
+        if (T >= 1.0) return SampleGradient(B, p);
 
-        // 2. SDF-aware reconstruction
-        if (A is ISignedDistanceField2D sa && B is ISignedDistanceField2D sb)
-        {
-            return EstimateGradient(A, p).Lerp(EstimateGradient(B, p), T);
-        }
-
-        // 3. IMPORTANT FIX:
-        // do NOT differentiate "this"
-        // instead fallback to A/B blending
-        var gA = EstimateGradient(A, p);
-        var gB = EstimateGradient(B, p);
-
+        Vector2D ga = SampleGradient(A, p);
+        Vector2D gb = SampleGradient(B, p);
         return new Vector2D(
-            gA.X.Lerp(gB.X, T),
-            gA.Y.Lerp(gB.Y, T)
-        );
+            LerpValue(ga.X, gb.X, T),
+            LerpValue(ga.Y, gb.Y, T));
+    }
+
+    private Rect GetBounds()
+    {
+        if (T <= 0.0) return A.Bounds;
+        if (T >= 1.0) return B.Bounds;
+
+        Rect ab = A.Bounds;
+        Rect bb = B.Bounds;
+        if (!IsFiniteRect(ab) || !IsFiniteRect(bb)) return Rect.Universal;
+        return Rect.Union(ab, bb);
+    }
+
+    private double CoverageMsaa(Rect pixel)
+    {
+        const double InvSamples = 1.0 / CoverageSamples;
+        double covered = 0.0;
+
+        for (int y = 0; y < CoverageSamples; y++)
+        {
+            double py = pixel.Top + (y + 0.5) * pixel.Height * InvSamples;
+            for (int x = 0; x < CoverageSamples; x++)
+            {
+                double px = pixel.Left + (x + 0.5) * pixel.Width * InvSamples;
+                if (Evaluate(new Point(px, py)) <= 0.0)
+                    covered += 1.0;
+            }
+        }
+
+        return covered * (InvSamples * InvSamples);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static Vector2D EstimateGradient(Field2D f, Point p)
+    private static double Sample(Field2D field, Point p)
+        => field is ISignedDistanceField2D sdf ? sdf.SignedDistance(p) : field.Evaluate(p);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector2D SampleGradient(Field2D field, Point p)
     {
-        double eps = 0.5;
+        if (field is IGradientField2D gradientField)
+            return gradientField.Gradient(p);
 
-        double v = f.Evaluate(p);
-        double vx = f.Evaluate(new Point(p.X + eps, p.Y));
-        double vy = f.Evaluate(new Point(p.X, p.Y + eps));
-
-        double gx = (vx - v) / eps;
-        double gy = (vy - v) / eps;
-
-        return new Vector2D(gx, gy);
+        return EstimateGradient(field, p);
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector2D EstimateGradient(Field2D field, Point p)
+    {
+        double eps = GradientEpsilon;
+        double lx = Sample(field, new Point(p.X - eps, p.Y));
+        double rx = Sample(field, new Point(p.X + eps, p.Y));
+        double ty = Sample(field, new Point(p.X, p.Y - eps));
+        double by = Sample(field, new Point(p.X, p.Y + eps));
+
+        return new Vector2D(
+            (rx - lx) / (eps * 2.0),
+            (by - ty) / (eps * 2.0));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static double LerpValue(double a, double b, double t)
+    {
+        if (t <= 0.0) return a;
+        if (t >= 1.0) return b;
+        if (a == b) return a;
+        if (double.IsFinite(a) && double.IsFinite(b))
+            return Math.FusedMultiplyAdd(b - a, t, a);
+
+        double value = a * (1.0 - t) + b * t;
+        if (!double.IsNaN(value)) return value;
+        if (double.IsPositiveInfinity(a) || double.IsPositiveInfinity(b)) return double.PositiveInfinity;
+        if (double.IsNegativeInfinity(a) || double.IsNegativeInfinity(b)) return double.NegativeInfinity;
+        return value;
+    }
+
+    private static bool IsFiniteRect(Rect r)
+        => double.IsFinite(r.X) && double.IsFinite(r.Y)
+        && double.IsFinite(r.Width) && double.IsFinite(r.Height);
 }

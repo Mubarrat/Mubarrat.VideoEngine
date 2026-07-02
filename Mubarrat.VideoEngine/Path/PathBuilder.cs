@@ -189,6 +189,10 @@ public class PathBuilder(IEnumerable<IPathSegment> segs)
     public Field2D BuildField(bool nonZero)
     {
         var segs = segments.ToArray();
-        return new CompiledField2D(CurveJitCompiler.Compile(segs, nonZero), Rect.Union(Array.ConvertAll(segs, x => x.Bounds)));
+        Path2D path = BuildPath(nonZero);
+        return new CompiledField2D(CurveJitCompiler.Compile(segs, nonZero), path.Bounds)
+        {
+            StrokePath = path
+        };
     }
 }

@@ -64,57 +64,70 @@ public class CircleField2D : Field2D, ISignedDistanceField2D, IIntervalField2D, 
         return new FieldInterval(minDistanceToCenter - Radius, maxDistanceToCenter - Radius);
     }
 
-    /// <summary>
-    /// Computes perfect analytical sub-pixel coverage values. 
-    /// Gracefully bypasses pixel-by-pixel subdivision logic using the circle's implicit distance metrics.
-    /// </summary>
     public double GetCoverage(Rect pixel)
     {
-        // Find the closest point inside the pixel box to the circle center
-        double closestX = Math.Clamp(Center.X, pixel.Left, pixel.Right);
-        double closestY = Math.Clamp(Center.Y, pixel.Top, pixel.Bottom);
+        double x0 = pixel.Left;
+        double x1 = pixel.Right;
+        double y0 = pixel.Top;
+        double y1 = pixel.Bottom;
 
-        // Calculate the maximum distance from the circle center to any corner of this pixel
-        double maxDx = Math.Max(Math.Abs(pixel.Left - Center.X), Math.Abs(pixel.Right - Center.X));
-        double maxDy = Math.Max(Math.Abs(pixel.Top - Center.Y), Math.Abs(pixel.Bottom - Center.Y));
-        double maxCornerDistance = Math.Sqrt((maxDx * maxDx) + (maxDy * maxDy));
+        double cx = Center.X;
+        double cy = Center.Y;
+        double r = Radius;
 
-        // Case 1: The entire pixel box is buried inside the circle solid volume
-        if (maxCornerDistance <= Radius)
-        {
-            return 1.0;
-        }
+        double pixelArea = (x1 - x0) * (y1 - y0);
 
-        // Calculate the minimum distance from the pixel box edges to the circle center
-        double minDx = Center.X < pixel.Left ? pixel.Left - Center.X : (Center.X > pixel.Right ? Center.X - pixel.Right : 0.0);
-        double minDy = Center.Y < pixel.Top ? pixel.Top - Center.Y : (Center.Y > pixel.Bottom ? Center.Y - pixel.Bottom : 0.0);
-        double minEdgeDistance = Math.Sqrt((minDx * minDx) + (minDy * minDy));
-
-        // Case 2: The entire pixel box is completely outside the circle footprint
-        if (minEdgeDistance >= Radius)
-        {
+        // ---- reject
+        if (x1 < cx - r || x0 > cx + r || y1 < cy - r || y0 > cy + r)
             return 0.0;
-        }
 
-        // Case 3: The circle boundary slices directly through this single pixel unit.
-        // We calculate the exact center distance of the pixel to determine the anti-aliased blend coefficient.
-        double pixelCenterX = pixel.X + pixel.Width * 0.5;
-        double pixelCenterY = pixel.Y + pixel.Height * 0.5;
+        // ---- full containment
+        if (ContainsFully(pixel, cx, cy, r))
+            return 1.0;
 
-        double centerDx = pixelCenterX - Center.X;
-        double centerDy = pixelCenterY - Center.Y;
-        double centerDistance = Math.Sqrt((centerDx * centerDx) + (centerDy * centerDy));
+        // ---- clamp x to circle domain
+        double lx = Math.Max(x0, cx - r);
+        double rx = Math.Min(x1, cx + r);
 
-        // Shift metrics relative to the circle circumference threshold
-        double edgeDistance = centerDistance - Radius;
+        if (lx >= rx)
+            return 0.0;
 
-        // Calculate the physical size/diagonal span of the pixel for filter scaling
-        double pixelHalfSpan = Math.Sqrt(pixel.Width * pixel.Width + pixel.Height * pixel.Height) * 0.5;
+        double area =
+            XIntegral(rx, cx, r) -
+            XIntegral(lx, cx, r);
 
-        // Map coverage linearly from 1.0 (inside) to 0.0 (outside) over the sub-pixel diagonal region
-        double coverage = 0.5 - (edgeDistance / (pixelHalfSpan * 2.0));
+        // normalize by rectangle area
+        return Math.Clamp(area / pixelArea, 0.0, 1.0);
+    }
 
-        return Math.Clamp(coverage, 0.0, 1.0);
+    private static bool ContainsFully(Rect pixel, double cx, double cy, double r)
+    {
+        double r2 = r * r;
+        return DistanceSquared(pixel.Left, pixel.Top, cx, cy) <= r2
+            && DistanceSquared(pixel.Right, pixel.Top, cx, cy) <= r2
+            && DistanceSquared(pixel.Left, pixel.Bottom, cx, cy) <= r2
+            && DistanceSquared(pixel.Right, pixel.Bottom, cx, cy) <= r2;
+    }
+
+    private static double XIntegral(double x, double cx, double r)
+    {
+        double h = x - cx;
+
+        if (h <= -r) return 0.0;
+        if (h >= r) return Math.PI * r * r;
+
+        double t = Math.Sqrt(r * r - h * h);
+
+        return
+            h * t
+            + r * r * Math.Asin(h / r);
+    }
+
+    private static double DistanceSquared(double x, double y, double cx, double cy)
+    {
+        double dx = x - cx;
+        double dy = y - cy;
+        return dx * dx + dy * dy;
     }
 
     public Vector2D Gradient(Point p)

@@ -1,3 +1,4 @@
+using Mubarrat.VideoEngine.Field;
 using Mubarrat.VideoEngine.Path;
 using System.Numerics;
 using System.Runtime.CompilerServices;
@@ -8,7 +9,7 @@ namespace Mubarrat.VideoEngine.Draw;
 // ─────────────────────────────────────────────────────────────────────────────
 // DrawingContext
 //
-// Pixel-accurate software renderer for Path2D → Color32* pixel buffer.
+// Pixel-accurate software renderer for Path2D / Field2D → Color32* pixel buffer.
 //
 // FILL: Blend2D / AGG / FreeType cell rasterizer.
 //   • Walks Path2D → PathContour → IPathSegment (LineSegment / Quadratic / Cubic).
@@ -24,6 +25,12 @@ namespace Mubarrat.VideoEngine.Draw;
 //   • Same adaptive flattening pipeline.
 //   • Caps, joins, and dashes are emitted as fillable contours.
 //   • The fill rasterizer handles AA, so stroke stays branch-light.
+//
+// FIELD: Dedicated implicit-field tile rasterizer.
+//   • Does not convert Field2D into Path2D.
+//   • Uses interval pruning for empty/full tiles.
+//   • Uses SDF AA when possible, interval checks, and MSAA fallback.
+//   • Strokes extract/cache SDF zero-boundary edges, then reuse Path2D stroking.
 // ─────────────────────────────────────────────────────────────────────────────
 public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ushort height) : IRenderer
 {
@@ -40,6 +47,8 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
     private const double FlatTol2 = 0.25 * 0.25;
 
     private const double MiterLim = 10.0;
+    private const int FieldTileSize = 16;
+    private const int FieldStrokeMaxCells = 2048;
 
     // ── State stacks ──────────────────────────────────────────────────────────
     private readonly Stack<(Matrix2D Transform, double Opacity)> stateStack = new();
@@ -81,6 +90,18 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
                     finally { Pop(); }
                     break;
                 }
+            case FieldDrawing fd:
+                {
+                    var ip = CurrentPaint;
+                    IBrush? ef = fd.Fill ?? ip.Fill;
+                    Pen es = fd.Stroke.Brush is null ? ip.Stroke : fd.Stroke;
+                    Rect? fb = fd.Fill is null ? NormalizeRectOrNull(ip.ScopeBounds) : null;
+                    Rect? sb = fd.Stroke.Brush is null ? NormalizeRectOrNull(ip.ScopeBounds) : null;
+                    PushState(fd.Transform, fd.Opacity);
+                    try { DrawField(fd.Field, ef, es, fb, sb); }
+                    finally { Pop(); }
+                    break;
+                }
             case GroupDrawing gd:
                 {
                     var pp = CurrentPaint;
@@ -117,6 +138,165 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
 
         if (stroke.Thickness > 0 && stroke.Brush is not null)
             StrokePass(path, stroke, opacity, w, h, strokeSamplingBounds ?? db);
+    }
+
+    public void DrawField(Field2D field, IBrush? fill, Pen stroke,
+        Rect? fillSamplingBounds = null, Rect? strokeSamplingBounds = null)
+    {
+        ArgumentNullException.ThrowIfNull(field);
+
+        var (transform, opacityD) = CurrentState;
+        int w = width, h = height;
+        if (w == 0 || h == 0 || opacityD <= 0 || !transform.IsInvertible) return;
+
+        Matrix2D inverse = transform.Inverse;
+        float opacity = (float)opacityD;
+        Rect baseBounds = GetFieldDeviceBounds(field, transform, 0, w, h);
+
+        if (fill is not null)
+            FieldFillPass(field, fill, opacity, w, h, transform, inverse,
+                fillSamplingBounds ?? baseBounds);
+
+        if (stroke.Thickness > 0 && stroke.Brush is not null && TryGetFieldStrokePath(field, transform, w, h, out Path2D strokePath))
+            StrokePass(strokePath * transform, stroke, opacity, w, h,
+                strokeSamplingBounds ?? baseBounds);
+    }
+
+    // =========================================================================
+    //  FIELD RASTERIZER
+    //
+    //  Dedicated implicit Field2D renderer; it deliberately avoids Path2D.
+    //
+    //  The fast path mirrors production field renderers:
+    //    • clip to transformed field bounds;
+    //    • cull/fill 16×16 tiles through IIntervalField2D;
+    //    • use ISignedDistanceField2D for analytic one-pixel AA ramps;
+    //    • fall back to 4×4 subpixel voting only for unknown fields.
+    //
+    //  Fill semantics: Field2D <= 0 is inside.
+    //  Stroke semantics: reuse Path2D stroke generation for exact caps/joins/dashes.
+    // =========================================================================
+    private void FieldFillPass(
+        Field2D field, IBrush fill, float opacity,
+        int w, int h, Matrix2D transform, Matrix2D inverse, Rect samplingBounds)
+    {
+        Rect drawBounds = GetFieldDeviceBounds(field, transform, 1.0, w, h);
+        if (!TryGetPixelBounds(drawBounds, w, h, out int x0, out int y0, out int x1, out int y1)) return;
+
+        samplingBounds = NormalizeSamplingBounds(samplingBounds, w, h);
+        double sl = samplingBounds.Left, st = samplingBounds.Top;
+        double invW = samplingBounds.Width > 1e-9 ? 1.0 / samplingBounds.Width : 1.0 / w;
+        double invH = samplingBounds.Height > 1e-9 ? 1.0 / samplingBounds.Height : 1.0 / h;
+        bool solid = fill is SolidColorBrush;
+        Color32 solPre = solid ? ((SolidColorBrush)fill).Color.ToPremultiplied : default;
+        double localPixelWidth = LocalPixelWidth(in inverse);
+        IIntervalField2D? interval = field as IIntervalField2D;
+        ISignedDistanceField2D? sdf = field as ISignedDistanceField2D;
+
+        for (int ty = y0; ty < y1; ty += FieldTileSize)
+        {
+            int tileBottom = Math.Min(ty + FieldTileSize, y1);
+            for (int tx = x0; tx < x1; tx += FieldTileSize)
+            {
+                int tileRight = Math.Min(tx + FieldTileSize, x1);
+
+                if (interval is not null)
+                {
+                    FieldInterval tileRange = interval.EvaluateInterval(DeviceRectToLocalAabb(tx, ty, tileRight - tx, tileBottom - ty, inverse));
+                    if (tileRange.IsFullyAbove(0.0)) continue;
+                    if (tileRange.IsFullyBelow(0.0))
+                    {
+                        BlitFieldTile(tx, tileRight, ty, tileBottom,
+                            sl, st, invW, invH, opacity, solid, solPre, fill, w);
+                        continue;
+                    }
+                }
+
+                for (int y = ty; y < tileBottom; y++)
+                {
+                    Color32* row = firstPixel + y * w;
+                    double sy = Math.Clamp((y + 0.5 - st) * invH, 0.0, 1.0);
+                    int fullSpanStart = -1;
+
+                    for (int x = tx; x < tileRight; x++)
+                    {
+                        float alpha = FieldFillCoverage(field, interval, sdf,
+                            x, y, inverse, localPixelWidth);
+
+                        if (alpha >= 0.999f)
+                        {
+                            if (fullSpanStart < 0) fullSpanStart = x;
+                            continue;
+                        }
+
+                        if (fullSpanStart >= 0)
+                        {
+                            BlitSpan(row, fullSpanStart, x, 1f, sy, sl, invW, opacity, solid, solPre, fill, w);
+                            fullSpanStart = -1;
+                        }
+
+                        if (alpha > 1e-5f)
+                            BlitPixel(row, x, alpha, sy, sl, invW, opacity, solid, solPre, fill);
+                    }
+
+                    if (fullSpanStart >= 0)
+                        BlitSpan(row, fullSpanStart, tileRight, 1f, sy, sl, invW, opacity, solid, solPre, fill, w);
+                }
+            }
+        }
+    }
+
+    private void BlitFieldTile(
+        int x0, int x1, int y0, int y1,
+        double sl, double st, double invW, double invH,
+        float opacity, bool solid, Color32 solPre, IBrush fill, int w)
+    {
+        for (int y = y0; y < y1; y++)
+        {
+            Color32* row = firstPixel + y * w;
+            double sy = Math.Clamp((y + 0.5 - st) * invH, 0.0, 1.0);
+            BlitSpan(row, x0, x1, 1f, sy, sl, invW, opacity, solid, solPre, fill, w);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static float FieldFillCoverage(
+        Field2D field, IIntervalField2D? interval, ISignedDistanceField2D? sdf,
+        int x, int y, Matrix2D inverse, double localPixelWidth)
+    {
+        Point center = new Point(x + 0.5, y + 0.5) * inverse;
+        if (sdf is not null)
+            return ClampUnit((float)(0.5 - sdf.SignedDistance(center) / localPixelWidth));
+
+        if (interval is not null)
+        {
+            Rect localPixel = DeviceRectToLocalAabb(x, y, 1, 1, inverse);
+            FieldInterval range = interval.EvaluateInterval(localPixel);
+            if (range.IsFullyAbove(0.0)) return 0f;
+            if (range.IsFullyBelow(0.0)) return 1f;
+        }
+
+        return (float)FieldMsaaCoverage(field, x, y, inverse);
+    }
+
+    private static double FieldMsaaCoverage(Field2D field, int x, int y, Matrix2D inverse)
+    {
+        const int Samples = 4;
+        const double InvSamples = 1.0 / Samples;
+        int inside = 0;
+
+        for (int sy = 0; sy < Samples; sy++)
+        {
+            double py = y + (sy + 0.5) * InvSamples;
+            for (int sx = 0; sx < Samples; sx++)
+            {
+                double px = x + (sx + 0.5) * InvSamples;
+                if (field.Evaluate(new Point(px, py) * inverse) <= 0.0)
+                    inside++;
+            }
+        }
+
+        return inside * (1.0 / (Samples * Samples));
     }
 
     // =========================================================================
@@ -978,6 +1158,384 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
         return area;
     }
 
+    private static Rect GetFieldDeviceBounds(Field2D field, Matrix2D transform, double inflate, int w, int h)
+    {
+        Rect bounds = field.Bounds;
+        if (!IsFiniteRect(bounds))
+            return new Rect(0, 0, w, h);
+
+        bounds = bounds.Normalized;
+        Rect deviceBounds = (bounds * transform).Normalized;
+        if (!IsFiniteRect(deviceBounds))
+            return new Rect(0, 0, w, h);
+
+        if (inflate > 0.0)
+            deviceBounds = deviceBounds.Inflate(inflate, inflate);
+
+        return deviceBounds;
+    }
+
+    private static bool TryGetFieldStrokePath(Field2D field, Matrix2D transform, int w, int h, out Path2D path)
+    {
+        switch (field)
+        {
+            case CompiledField2D compiled when compiled.StrokePath.Count > 0:
+                path = compiled.StrokePath;
+                return true;
+
+            case CircleField2D circle when circle.Radius > 0.0:
+                path = PathBuilder.Circle(circle.Center, circle.Radius).BuildPath(FillRule.NonZero);
+                return true;
+
+            case BoxField2D box when box.Width > 0.0 && box.Height > 0.0:
+                path = PathBuilder.Rectangle(box.Bounds).BuildPath(FillRule.NonZero);
+                return true;
+
+            case TransformField2D transformField when TryGetFieldStrokePath(transformField.Child, transformField.Transform * transform, w, h, out Path2D childPath):
+                path = childPath * transformField.Transform;
+                return true;
+
+            default:
+                return TryBuildFieldBoundaryPath(field, transform, w, h, out path);
+        }
+    }
+
+    private static bool TryBuildFieldBoundaryPath(Field2D field, Matrix2D transform, int w, int h, out Path2D path)
+    {
+        path = Path2D.Empty;
+        if (field is not ISignedDistanceField2D && field is not LerpField2D)
+            return false;
+
+        Rect bounds = field.Bounds;
+        if (!IsFiniteRect(bounds))
+            return false;
+
+        bounds = bounds.Normalized;
+        if (bounds.Width <= 1e-9 || bounds.Height <= 1e-9)
+            return false;
+
+        Rect deviceBounds = (bounds * transform).Normalized;
+        if (!IsFiniteRect(deviceBounds))
+            return false;
+
+        int cellsX = Math.Clamp((int)Math.Ceiling(deviceBounds.Width), 4, FieldStrokeMaxCells);
+        int cellsY = Math.Clamp((int)Math.Ceiling(deviceBounds.Height), 4, FieldStrokeMaxCells);
+        if (cellsX <= 0 || cellsY <= 0)
+            return false;
+
+        double dx = bounds.Width / cellsX;
+        double dy = bounds.Height / cellsY;
+        double padX = dx * 1.5;
+        double padY = dy * 1.5;
+        bounds = bounds.Inflate(padX, padY);
+        dx = bounds.Width / cellsX;
+        dy = bounds.Height / cellsY;
+
+        int horizontalEdgeCount = (cellsY + 1) * cellsX;
+        var segments = new List<BoundarySegment>(Math.Min(cellsX * cellsY, 16384));
+        var edgePoints = new Dictionary<int, Point>(Math.Min(cellsX * cellsY, 16384));
+        double[] top = new double[cellsX + 1];
+        double[] bottom = new double[cellsX + 1];
+
+        SampleBoundaryRow(field, bounds.Left, bounds.Top, dx, cellsX, top);
+
+        for (int y = 0; y < cellsY; y++)
+        {
+            double y0 = bounds.Top + y * dy;
+            double y1 = y == cellsY - 1 ? bounds.Bottom : y0 + dy;
+            SampleBoundaryRow(field, bounds.Left, y1, dx, cellsX, bottom);
+
+            for (int x = 0; x < cellsX; x++)
+            {
+                double x0 = bounds.Left + x * dx;
+                double x1 = x == cellsX - 1 ? bounds.Right : x0 + dx;
+                AddMarchingCellSegments(
+                    segments, edgePoints, x, y, cellsX, horizontalEdgeCount,
+                    new Point(x0, y0), new Point(x1, y0),
+                    new Point(x1, y1), new Point(x0, y1),
+                    top[x], top[x + 1], bottom[x + 1], bottom[x]);
+            }
+
+            (top, bottom) = (bottom, top);
+        }
+
+        if (segments.Count == 0)
+            return false;
+
+        path = BuildBoundaryPath(segments, edgePoints);
+        return path.Count > 0;
+    }
+
+    private static void SampleBoundaryRow(Field2D field, double left, double y, double dx, int cellsX, double[] row)
+    {
+        for (int x = 0; x <= cellsX; x++)
+            row[x] = SampleFieldBoundary(field, new Point(left + x * dx, y));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static double SampleFieldBoundary(Field2D field, Point point)
+        => field is ISignedDistanceField2D sdf ? sdf.SignedDistance(point) : field.Evaluate(point);
+
+    private static void AddMarchingCellSegments(
+        List<BoundarySegment> segments, Dictionary<int, Point> edgePoints,
+        int cellX, int cellY, int cellsX, int horizontalEdgeCount,
+        Point p00, Point p10, Point p11, Point p01,
+        double v00, double v10, double v11, double v01)
+    {
+        int mask = 0;
+        if (v00 <= 0.0) mask |= 1;
+        if (v10 <= 0.0) mask |= 2;
+        if (v11 <= 0.0) mask |= 4;
+        if (v01 <= 0.0) mask |= 8;
+        if (mask == 0 || mask == 15) return;
+
+        int edge0 = 0, edge1 = 0, edge2 = 0, edge3 = 0;
+        int count = 0;
+
+        AddEdge(MarchingHorizontalEdgeId(cellX, cellY, cellsX), p00, p10, v00, v10);
+        AddEdge(MarchingVerticalEdgeId(cellX + 1, cellY, cellsX, horizontalEdgeCount), p10, p11, v10, v11);
+        AddEdge(MarchingHorizontalEdgeId(cellX, cellY + 1, cellsX), p01, p11, v01, v11);
+        AddEdge(MarchingVerticalEdgeId(cellX, cellY, cellsX, horizontalEdgeCount), p00, p01, v00, v01);
+
+        if (count == 2)
+        {
+            AddBoundarySegment(segments, edgePoints, Edge(0), Edge(1));
+            return;
+        }
+
+        if (count == 4)
+        {
+            double center = (v00 + v10 + v11 + v01) * 0.25;
+            bool centerInside = center <= 0.0;
+
+            if (mask == 5)
+            {
+                if (centerInside)
+                {
+                    AddBoundarySegment(segments, edgePoints, Edge(0), Edge(1));
+                    AddBoundarySegment(segments, edgePoints, Edge(2), Edge(3));
+                }
+                else
+                {
+                    AddBoundarySegment(segments, edgePoints, Edge(0), Edge(3));
+                    AddBoundarySegment(segments, edgePoints, Edge(1), Edge(2));
+                }
+                return;
+            }
+
+            if (mask == 10)
+            {
+                if (centerInside)
+                {
+                    AddBoundarySegment(segments, edgePoints, Edge(0), Edge(3));
+                    AddBoundarySegment(segments, edgePoints, Edge(1), Edge(2));
+                }
+                else
+                {
+                    AddBoundarySegment(segments, edgePoints, Edge(0), Edge(1));
+                    AddBoundarySegment(segments, edgePoints, Edge(2), Edge(3));
+                }
+                return;
+            }
+
+            AddBoundarySegment(segments, edgePoints, Edge(0), Edge(1));
+            AddBoundarySegment(segments, edgePoints, Edge(2), Edge(3));
+        }
+
+        void AddEdge(int edgeId, Point a, Point b, double va, double vb)
+        {
+            bool aInside = va <= 0.0;
+            bool bInside = vb <= 0.0;
+            if (aInside == bInside) return;
+
+            if (!edgePoints.ContainsKey(edgeId))
+                edgePoints.Add(edgeId, InterpolateZero(a, b, va, vb));
+
+            switch (count++)
+            {
+                case 0: edge0 = edgeId; break;
+                case 1: edge1 = edgeId; break;
+                case 2: edge2 = edgeId; break;
+                case 3: edge3 = edgeId; break;
+            }
+        }
+
+        int Edge(int index) => index switch
+        {
+            0 => edge0,
+            1 => edge1,
+            2 => edge2,
+            _ => edge3
+        };
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int MarchingHorizontalEdgeId(int x, int y, int cellsX)
+        => y * cellsX + x;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int MarchingVerticalEdgeId(int x, int y, int cellsX, int horizontalEdgeCount)
+        => horizontalEdgeCount + y * (cellsX + 1) + x;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Point InterpolateZero(Point a, Point b, double va, double vb)
+    {
+        double denom = va - vb;
+        double t = Math.Abs(denom) > 1e-30 ? va / denom : 0.5;
+        t = Math.Clamp(t, 0.0, 1.0);
+        return new Point(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void AddBoundarySegment(
+        List<BoundarySegment> segments, IReadOnlyDictionary<int, Point> edgePoints,
+        int aId, int bId)
+    {
+        if (aId == bId) return;
+        Point a = edgePoints[aId];
+        Point b = edgePoints[bId];
+        if (a.DistanceSquaredTo(b) <= 1e-18) return;
+        segments.Add(new BoundarySegment(aId, bId));
+    }
+
+    private static Path2D BuildBoundaryPath(List<BoundarySegment> segments, IReadOnlyDictionary<int, Point> edgePoints)
+    {
+        var adjacency = new Dictionary<int, List<int>>(segments.Count * 2);
+        for (int i = 0; i < segments.Count; i++)
+        {
+            AddIndex(segments[i].AId, i);
+            AddIndex(segments[i].BId, i);
+        }
+
+        var contours = new List<PathContour>();
+        bool[] used = new bool[segments.Count];
+
+        for (int i = 0; i < segments.Count; i++)
+        {
+            if (used[i]) continue;
+
+            used[i] = true;
+            var points = new List<Point>(64) { edgePoints[segments[i].AId], edgePoints[segments[i].BId] };
+            int startKey = segments[i].AId;
+            int endKey = segments[i].BId;
+
+            ExtendBoundaryChain(points, ref endKey, adjacency, segments, edgePoints, used, append: true);
+            ExtendBoundaryChain(points, ref startKey, adjacency, segments, edgePoints, used, append: false);
+
+            if (points.Count < 2) continue;
+            if (points[0].DistanceSquaredTo(points[^1]) <= 1e-12)
+                points[^1] = points[0];
+
+            var contourSegments = new List<IPathSegment>(points.Count);
+            for (int p = 0; p < points.Count - 1; p++)
+            {
+                if (points[p].DistanceSquaredTo(points[p + 1]) > 1e-18)
+                    contourSegments.Add(new LineSegment(points[p], points[p + 1]));
+            }
+
+            if (contourSegments.Count > 0)
+                contours.Add(new PathContour(contourSegments));
+        }
+
+        return contours.Count == 0 ? Path2D.Empty : new Path2D(FillRule.NonZero, contours);
+
+        void AddIndex(int key, int index)
+        {
+            if (!adjacency.TryGetValue(key, out List<int>? list))
+            {
+                list = new List<int>(4);
+                adjacency.Add(key, list);
+            }
+            list.Add(index);
+        }
+    }
+
+    private static void ExtendBoundaryChain(
+        List<Point> points, ref int endpoint,
+        Dictionary<int, List<int>> adjacency,
+        List<BoundarySegment> segments,
+        IReadOnlyDictionary<int, Point> edgePoints,
+        bool[] used, bool append)
+    {
+        while (adjacency.TryGetValue(endpoint, out List<int>? candidates))
+        {
+            int nextIndex = -1;
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                int candidate = candidates[i];
+                if (!used[candidate])
+                {
+                    nextIndex = candidate;
+                    break;
+                }
+            }
+
+            if (nextIndex < 0) return;
+
+            used[nextIndex] = true;
+            BoundarySegment segment = segments[nextIndex];
+            int nextId;
+            if (segment.AId == endpoint)
+            {
+                nextId = segment.BId;
+                endpoint = segment.BId;
+            }
+            else
+            {
+                nextId = segment.AId;
+                endpoint = segment.AId;
+            }
+
+            Point nextPoint = edgePoints[nextId];
+            if (append) points.Add(nextPoint);
+            else points.Insert(0, nextPoint);
+        }
+    }
+
+    private static bool TryGetPixelBounds(Rect bounds, int w, int h, out int x0, out int y0, out int x1, out int y1)
+    {
+        if (!IsFiniteRect(bounds))
+        {
+            x0 = 0; y0 = 0; x1 = w; y1 = h;
+            return w > 0 && h > 0;
+        }
+
+        bounds = bounds.Normalized;
+        x0 = Math.Clamp((int)Math.Floor(bounds.Left), 0, w);
+        y0 = Math.Clamp((int)Math.Floor(bounds.Top), 0, h);
+        x1 = Math.Clamp((int)Math.Ceiling(bounds.Right), 0, w);
+        y1 = Math.Clamp((int)Math.Ceiling(bounds.Bottom), 0, h);
+        return x0 < x1 && y0 < y1;
+    }
+
+    private static Rect NormalizeSamplingBounds(Rect bounds, int w, int h)
+    {
+        if (!IsFiniteRect(bounds))
+            return new Rect(0, 0, w, h);
+
+        bounds = bounds.Normalized;
+        return bounds.Width > 1e-9 && bounds.Height > 1e-9
+            ? bounds
+            : new Rect(0, 0, w, h);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Rect DeviceRectToLocalAabb(double x, double y, double width, double height, Matrix2D inverse)
+        => (new Rect(x, y, width, height) * inverse).Normalized;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static double LocalPixelWidth(in Matrix2D inverse)
+    {
+        double xAxis = Math.Sqrt(inverse.ScaleX * inverse.ScaleX + inverse.SkewX * inverse.SkewX);
+        double yAxis = Math.Sqrt(inverse.SkewY * inverse.SkewY + inverse.ScaleY * inverse.ScaleY);
+        double width = Math.Max(xAxis, yAxis);
+        return double.IsFinite(width) && width > 1e-12 ? width : 1.0;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static float ClampUnit(float value)
+        => value <= 0f ? 0f : value >= 1f ? 1f : value;
+
     private static Rect? NormalizeRectOrNull(Rect r)
         => IsFiniteRect(r) ? r.Normalized : null;
 
@@ -1014,6 +1572,12 @@ public unsafe sealed class DrawingContext(Color32* firstPixel, ushort width, ush
     {
         public readonly double X1 = x1, Y1 = y1, X2 = x2, Y2 = y2, Ux = ux, Uy = uy;
         public readonly bool Valid = valid;
+    }
+
+    private readonly struct BoundarySegment(int aId, int bId)
+    {
+        public readonly int AId = aId;
+        public readonly int BId = bId;
     }
 
     internal readonly record struct InheritedPaintState(IBrush? Fill, Pen Stroke, Rect ScopeBounds);

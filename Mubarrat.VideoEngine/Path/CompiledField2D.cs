@@ -5,6 +5,7 @@ namespace Mubarrat.VideoEngine.Path;
 internal sealed class CompiledField2D(CompiledShape shape, Rect bounds) : Field2D, ISignedDistanceField2D, IIntervalField2D, ICoverageField2D, IGradientField2D
 {
     public override Rect Bounds => bounds;
+    public Path2D StrokePath { get; init; } = Path2D.Empty;
 
     public override double Evaluate(Point p) => SignedDistance(p);
 
